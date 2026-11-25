@@ -367,6 +367,13 @@ export default function UploadModal({ open, onClose, onSuccess }: Props) {
               </ul>
             )}
 
+            {(busy || running) && (
+              <p className="mt-3 flex items-start gap-2 text-[11px] leading-relaxed text-slate-400 bg-slate-800/40 rounded-lg px-3 py-2" role="note" data-testid="cpu-notice">
+                <span className="material-symbols-outlined text-sm text-indigo-300">hourglass_top</span>
+                <span>Hang tight, this can take a little while: document parsing runs on a CPU, not a GPU. You can keep this open while it works.</span>
+              </p>
+            )}
+
             {items.length > 0 && (
               <div className="mt-5 flex flex-col sm:flex-row gap-2 sm:items-center">
                 <p className="text-xs text-slate-400 flex-1" aria-live="polite">
