@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { submitFeedback } from '../../lib/api';
-import type { ChatTurn } from '../../lib/useChat';
+import type { ChatTurn } from '../../lib/chatStore';
 import type { Source } from '../../lib/types';
 import MarkdownAnswer from './MarkdownAnswer';
 
