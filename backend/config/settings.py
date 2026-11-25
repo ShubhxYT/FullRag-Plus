@@ -80,9 +80,15 @@ def get_generation_max_tokens() -> int:
 def get_generation_provider() -> str:
     """Return the generation provider name from environment.
 
-    Supported: 'gemini', 'groq'. Defaults to 'gemini'.
+    Supported: 'gemini', 'groq'. If GENERATION_PROVIDER is unset, uses 'groq'
+    when only a Groq key is configured, otherwise 'gemini'.
     """
-    return os.environ.get("GENERATION_PROVIDER", "gemini")
+    explicit = os.environ.get("GENERATION_PROVIDER", "").strip().lower()
+    if explicit:
+        return explicit
+    if os.environ.get("GROQ_API_KEY") and not os.environ.get("GEMINI_API_KEY"):
+        return "groq"
+    return "gemini"
 
 
 def get_groq_base_url() -> str:
@@ -93,12 +99,39 @@ def get_groq_base_url() -> str:
     return os.environ.get("GROQ_BASE_URL", "https://api.groq.com/openai/v1")
 
 
-def get_groq_model() -> str:
-    """Return the Groq model name from environment.
+# Groq's catalogue changes often (llama-3.3-70b-versatile is no longer offered
+# on every plan), so the default is a model available on the free tier today
+# and a fallback chain is tried when a model is missing or rate-limited.
+DEFAULT_GROQ_MODEL = "openai/gpt-oss-120b"
+DEFAULT_GROQ_FALLBACK_MODELS = "openai/gpt-oss-20b,qwen/qwen3.8-27b"
 
-    Defaults to llama-3.3-70b-versatile. Override with GROQ_MODEL env var.
+
+def get_groq_model() -> str:
+    """Return the primary Groq model name from environment.
+
+    Defaults to openai/gpt-oss-120b. Override with GROQ_MODEL env var.
     """
-    return os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
+    return os.environ.get("GROQ_MODEL", "").strip() or DEFAULT_GROQ_MODEL
+
+
+def get_groq_fallback_models() -> list[str]:
+    """Return Groq models to try, in order, if the primary model fails.
+
+    Comma-separated GROQ_FALLBACK_MODELS; set it to an empty string to
+    disable fallback. Defaults to openai/gpt-oss-20b,qwen/qwen3.8-27b.
+    """
+    raw = os.environ.get("GROQ_FALLBACK_MODELS")
+    if raw is None:
+        raw = DEFAULT_GROQ_FALLBACK_MODELS
+    return [m.strip() for m in raw.split(",") if m.strip()]
+
+
+def get_groq_reasoning_effort() -> str:
+    """Reasoning effort for Groq reasoning models (gpt-oss): low|medium|high.
+
+    Defaults to 'low' to keep chat latency down.
+    """
+    return os.environ.get("GROQ_REASONING_EFFORT", "low").strip().lower()
 
 
 def get_mistral_api_key() -> str:
