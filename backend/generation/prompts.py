@@ -1,6 +1,7 @@
 """Prompt templates and registry for LLM-driven enrichment and generation."""
 
 import logging
+import os
 from typing import Callable
 
 from generation.models import PromptVariant, RenderedPrompt
@@ -42,7 +43,10 @@ Output your response as JSON conforming to the provided schema.\
 TemplateRenderer = Callable[[str, list[RetrievalResult]], RenderedPrompt]
 
 # Default similarity threshold below which we consider context insufficient
-DEFAULT_INSUFFICIENT_THRESHOLD = 0.3
+# bge-base cosine scores sit in a narrow band: unrelated chunks still score
+# ~0.35-0.45 and real matches ~0.55-0.80, so 0.3 never triggered. Override
+# with INSUFFICIENT_THRESHOLD.
+DEFAULT_INSUFFICIENT_THRESHOLD = float(os.environ.get("INSUFFICIENT_THRESHOLD", "0.45"))
 
 
 class PromptRegistry:
