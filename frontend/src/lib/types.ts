@@ -1,7 +1,14 @@
+export interface ChatMessage {
+  role: 'user' | 'assistant';
+  content: string;
+}
+
 export interface QueryRequest {
   question: string;
   top_k?: number;
   prompt_variant?: 'qa' | 'summarize' | null;
+  /** Earlier turns, oldest first (ignored by backends that predate it). */
+  history?: ChatMessage[];
 }
 
 export interface Source {
@@ -10,6 +17,8 @@ export interface Source {
   chunk_summary: string;
   page_numbers: number[];
   similarity_score: number;
+  /** Short excerpt of the chunk (newer backends only). */
+  snippet?: string;
 }
 
 export interface LatencyBreakdown {
@@ -32,7 +41,24 @@ export interface QueryResponse {
   token_usage: TokenUsage;
   prompt_version: string;
   query_log_id: string | null;
+  /** Model that produced the answer (newer backends only). */
+  model?: string | null;
 }
+
+/** One NDJSON event from POST /query/stream. */
+export type StreamEvent =
+  | { type: 'sources'; sources: Source[]; prompt_version: string }
+  | { type: 'delta'; text: string }
+  | {
+      type: 'done';
+      answer: string;
+      latency: LatencyBreakdown;
+      token_usage: TokenUsage;
+      prompt_version: string;
+      model: string | null;
+      query_log_id: string | null;
+    }
+  | { type: 'error'; detail: string };
 
 export interface DocumentItem {
   id: string;
