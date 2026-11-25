@@ -65,6 +65,9 @@ def _run_ingestion(job_id: str, tmp_path: str, original_name: str) -> None:
         # Allow original filename as title if not set by loader
         if doc.title is None:
             doc.title = Path(original_name).stem
+        # Store the user's file name, not the random temp path (/tmp/tmpXXXX.md)
+        # that the loader saw; it is what the UI shows as the source.
+        doc.source_path = Path(original_name).name or doc.source_path
 
         # Stage 2 — Save document & chunks to DB
         update("saving", 60)
