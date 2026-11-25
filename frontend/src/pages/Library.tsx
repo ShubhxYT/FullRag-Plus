@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { motion } from 'framer-motion';
-import { fetchDocuments } from '../lib/api';
+import { fetchDocuments, getErrorMessage } from '../lib/api';
 import DocumentCard from '../components/library/DocumentCard';
 import HealthMetrics from '../components/library/HealthMetrics';
 import UploadModal from '../components/library/UploadModal';
@@ -14,7 +14,7 @@ const pageVariants = {
 
 export default function Library() {
   const queryClient = useQueryClient();
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, error, refetch, isFetching } = useQuery({
     queryKey: ['documents'],
     queryFn: fetchDocuments,
     retry: false,
@@ -76,6 +76,22 @@ export default function Library() {
             : data?.documents.map((doc) => (
                 <DocumentCard key={doc.id} document={doc} />
               ))}
+          {!isLoading && error && (
+            <div
+              role="alert"
+              className="col-span-full bg-red-950/30 border border-red-500/20 rounded-2xl p-6 text-red-300"
+            >
+              <p className="font-headline font-bold mb-1">Couldn&apos;t load documents</p>
+              <p className="text-sm text-red-400 mb-4 break-words">{getErrorMessage(error)}</p>
+              <button
+                onClick={() => refetch()}
+                disabled={isFetching}
+                className="px-4 py-2 rounded-full text-xs font-bold uppercase tracking-widest bg-red-900/40 hover:bg-red-900/60 text-red-200 disabled:opacity-50"
+              >
+                {isFetching ? 'Retrying…' : 'Try again'}
+              </button>
+            </div>
+          )}
           {!isLoading && data && data.documents.length === 0 && (
             <div className="col-span-full text-center py-16 text-slate-500">
               <span className="material-symbols-outlined text-4xl mb-4 block">
@@ -95,7 +111,7 @@ export default function Library() {
         <HealthMetrics />
 
         <footer className="mt-16 text-center text-outline text-xs font-medium tracking-widest uppercase">
-          © 2024 FullRag Systems • Intellectual Integrity Secured
+          © {new Date().getFullYear()} FullRag Systems • Intellectual Integrity Secured
         </footer>
       </div>
     </motion.div>
