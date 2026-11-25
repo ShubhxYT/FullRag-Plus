@@ -14,6 +14,7 @@ from embeddings.models import EmbeddingConfig
 from embeddings.service import EmbeddingService
 from ingestion.pipeline import IngestionPipeline
 from observability.logging import get_logger
+from retrieval.doc_routing import CONTEXT_VERSION, contextual_text
 
 logger = get_logger(__name__)
 router = APIRouter()
@@ -102,8 +103,14 @@ def _run_ingestion_locked(job_id: str, tmp_path: str, original_name: str) -> Non
 
             # Stage 3 — Embed chunks
             update("embedding", 80)
-            chunk_texts = [c.text for c in doc.chunks if c.text.strip()]
-            chunk_ids = [c.id for c in doc.chunks if c.text.strip()]
+            kept = [c for c in doc.chunks if c.text.strip()]
+            # Embed with the document name + section in front, so questions
+            # that only name the document ("module 5") can find its chunks.
+            chunk_texts = [
+                contextual_text(c.text, doc.source_path, doc.title, c.section_path)
+                for c in kept
+            ]
+            chunk_ids = [c.id for c in kept]
 
             if chunk_texts:
                 result = _get_embedding_service().embed(chunk_texts)
@@ -111,7 +118,9 @@ def _run_ingestion_locked(job_id: str, tmp_path: str, original_name: str) -> Non
                 # Stage 4 — Store embeddings
                 update("indexing", 95)
                 embeddings = list(zip(chunk_ids, result.vectors))
-                repo.insert_bulk_embeddings(session, embeddings, result.model)
+                repo.insert_bulk_embeddings(
+                    session, embeddings, f"{result.model}#{CONTEXT_VERSION}"
+                )
 
             session.commit()
         finally:

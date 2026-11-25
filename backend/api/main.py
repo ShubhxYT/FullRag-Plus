@@ -34,6 +34,33 @@ logger = get_logger(__name__)
 _scheduler = None
 
 
+def _start_reembed_thread() -> None:
+    """Upgrade old chunk embeddings to contextual ones in the background.
+
+    Holds the upload lock so it never competes with an ingestion for CPU or
+    for loading the embedding model.
+    """
+    import threading
+
+    def run() -> None:
+        try:
+            from api.routes.upload import _ingest_lock
+            from embeddings.reembed import outdated_count, reembed_outdated
+
+            if outdated_count() == 0:
+                return
+            with _ingest_lock:
+                n = reembed_outdated()
+            if n:
+                from api.routes.query import invalidate_response_cache
+
+                invalidate_response_cache()
+        except Exception as exc:  # never block startup
+            logger.warning("Background re-embedding skipped: %s", exc)
+
+    threading.Thread(target=run, name="reembed", daemon=True).start()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global _scheduler
@@ -42,6 +69,7 @@ async def lifespan(app: FastAPI):
 
         _scheduler = BackgroundEvaluationScheduler()
         _scheduler.start(get_eval_schedule_interval_hours())
+    _start_reembed_thread()
     yield
     if _scheduler:
         _scheduler.stop()
