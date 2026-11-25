@@ -145,7 +145,8 @@ Base URL (local dev): `http://localhost:8001`
 |--------|----------|-------------|
 | `GET` | `/health` | Health check — returns DB connection status |
 | `GET` | `/documents` | List all ingested documents with chunk counts |
-| `POST` | `/query` | Submit a RAG query — returns answer + sources |
+| `POST` | `/query` | Submit a RAG query — returns answer + sources (optional `history` for follow-ups) |
+| `POST` | `/query/stream` | Same, streamed as NDJSON: `sources` → `delta`… → `done` (or `error`) |
 | `POST` | `/feedback` | Submit user feedback on a query result |
 | `GET` | `/evaluation/summary` | Get evaluation metrics summary |
 
@@ -183,7 +184,9 @@ All variables are read from `.env` in the project root (Docker Compose) or `back
 | `GENERATION_MODEL` | `gemini-2.5-flash` | No | Gemini model name |
 | `GENERATION_TEMPERATURE` | `0.3` | No | LLM sampling temperature |
 | `GENERATION_MAX_TOKENS` | `2048` | No | Maximum output tokens |
-| `GROQ_MODEL` | `llama-3.3-70b-versatile` | No | Groq model name |
+| `GROQ_MODEL` | `openai/gpt-oss-120b` | No | Primary Groq model (must be available to your key) |
+| `GROQ_FALLBACK_MODELS` | `openai/gpt-oss-20b,qwen/qwen3.8-27b` | No | Comma-separated models tried when the primary is missing or rate-limited |
+| `GROQ_REASONING_EFFORT` | `low` | No | gpt-oss reasoning effort (low/medium/high) |
 | `LOG_LEVEL` | `INFO` | No | `DEBUG` / `INFO` / `WARNING` / `ERROR` |
 | `LOG_FORMAT` | `json` | No | `json` or `text` |
 | `CACHE_TTL_SECONDS` | `3600` | No | Response cache TTL |
