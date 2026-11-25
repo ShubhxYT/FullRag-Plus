@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import { submitFeedback } from '../../lib/api';
 import type { ChatTurn } from '../../lib/chatStore';
@@ -87,6 +88,7 @@ export default function ChatTurnView({ turn, isLast, onRetry, onFeedback }: Prop
   const [highlight, setHighlight] = useState<number | null>(null);
   const [copied, setCopied] = useState(false);
   const [feedbackError, setFeedbackError] = useState(false);
+  const queryClient = useQueryClient();
 
   const cite = (n: number) => {
     setHighlight(n);
@@ -109,6 +111,7 @@ export default function ChatTurnView({ turn, isLast, onRetry, onFeedback }: Prop
     setFeedbackError(false);
     try {
       await submitFeedback({ query_log_id: turn.queryLogId ?? null, feedback_type: type, query_text: turn.question });
+      queryClient.invalidateQueries({ queryKey: ['evaluation'] });
     } catch {
       setFeedbackError(true);
     }
