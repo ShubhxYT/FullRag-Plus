@@ -25,6 +25,7 @@ from pipeline.models import (
     RAGResponse,
     SourceCitation,
 )
+from retrieval.doc_routing import is_overview, match_documents
 from retrieval.models import RetrievalResult
 from retrieval.service import RetrievalService
 
@@ -121,6 +122,81 @@ class RAGPipeline:
             return question
         return f"{previous[-1]}\n{question}"
 
+    # Most chunks one document may contribute to an ordinary answer.
+    MAX_CHUNKS_PER_DOCUMENT = 3
+    # Documents outlined for an overview question that names none.
+    MAX_OVERVIEW_DOCUMENTS = 4
+
+    def _catalog(self) -> list[tuple[str, str, str | None]]:
+        catalog = getattr(self._retrieval, "document_catalog", None)
+        if not callable(catalog):
+            return []
+        try:
+            docs = catalog()
+        except Exception as exc:  # routing is an optimisation; never fail the query
+            logger.warning("Document catalog unavailable: %s", exc)
+            return []
+        return docs if isinstance(docs, list) else []
+
+    async def _route_and_retrieve(
+        self, question: str, history: list[dict[str, str]], top_k: int
+    ) -> tuple[list[RetrievalResult], bool]:
+        """Pick the retrieval strategy for a question.
+
+        * names documents ("my modules", "module 5")  -> search only those
+        * overview ("list all the topics ...")         -> outline of the
+          named documents, or of the documents the best chunks come from
+        * otherwise                                    -> plain vector search
+
+        Returns (results, routed) where routed means a document-aware path
+        was taken.
+        """
+        rq = self._retrieval_query(question, history)
+        catalog = await asyncio.to_thread(self._catalog) if hasattr(self._retrieval, "document_catalog") else []
+        named = match_documents(question, [(d[0], d[1]) for d in catalog]) if catalog else []
+        if not named and history and catalog:
+            named = match_documents(rq, [(d[0], d[1]) for d in catalog])
+        overview = bool(catalog) and is_overview(question)
+
+        if named or overview:
+            # Rank chunks of the candidate docs (also gives per-doc scores).
+            ranked = await self._retrieval.retrieve(
+                rq,
+                top_k=max(top_k, 8) if overview else top_k,
+                document_ids=named or None,
+                max_per_document=None if named else self.MAX_CHUNKS_PER_DOCUMENT,
+            )
+            best: dict[str, float] = {}
+            order: list[str] = []
+            for r in ranked.results:
+                if r.document_id not in best:
+                    order.append(r.document_id)
+                    best[r.document_id] = r.similarity_score
+            if overview:
+                doc_ids = named or order[: self.MAX_OVERVIEW_DOCUMENTS]
+                # keep the named docs in a natural order (by file name)
+                if named:
+                    names = {d[0]: d[1] for d in catalog}
+                    doc_ids = sorted(named, key=lambda i: names.get(i, ""))
+                outlines = await asyncio.to_thread(self._retrieval.document_outlines, doc_ids, best)
+                logger.info(
+                    "RAG routing: overview",
+                    extra={"component": "pipeline", "documents": len(outlines), "named": bool(named)},
+                )
+                if outlines:
+                    return outlines, True
+            logger.info(
+                "RAG routing: named documents",
+                extra={"component": "pipeline", "documents": len(named)},
+            )
+            return ranked.results, bool(named)
+
+        kwargs = {"top_k": top_k}
+        if catalog:
+            kwargs["max_per_document"] = self.MAX_CHUNKS_PER_DOCUMENT
+        response = await self._retrieval.retrieve(rq, **kwargs)
+        return response.results, False
+
     def _cache_key(self, question: str, history: list[dict[str, str]]) -> str | None:
         """Only stand-alone questions are cached (answers depend on history)."""
         if history:
@@ -141,17 +217,19 @@ class RAGPipeline:
             extra={"component": "pipeline", "query": question[:80], "top_k": top_k},
         )
         retrieval_start = time.perf_counter()
-        retrieval_response = await self._retrieval.retrieve(
-            self._retrieval_query(question, history), top_k=top_k
-        )
+        results, routed = await self._route_and_retrieve(question, history, top_k)
         latency.retrieval_ms = round((time.perf_counter() - retrieval_start) * 1000, 2)
 
         context_start = time.perf_counter()
-        fitted_chunks = self._context_manager.fit_context(retrieval_response.results)
+        fitted_chunks = self._context_manager.fit_context(results)
         latency.context_ms = round((time.perf_counter() - context_start) * 1000, 2)
 
         if prompt_variant:
             variant = PromptVariant(prompt_variant)
+        elif routed and fitted_chunks:
+            # The question named documents (or asked for an overview) and we
+            # have their content: answer from it, whatever the raw scores are.
+            variant = PromptVariant.QA
         else:
             variant = self._prompt_registry.select_template(question, fitted_chunks)
 

@@ -47,6 +47,8 @@ class RetrievalService:
         query: str,
         top_k: int = 5,
         threshold: float | None = None,
+        document_ids: list[str] | None = None,
+        max_per_document: int | None = None,
     ) -> RetrievalResponse:
         """Retrieve the most relevant chunks for a query.
 
@@ -74,7 +76,7 @@ class RetrievalService:
 
         # 2. Search the vector database (blocking I/O — offload to thread)
         results = await asyncio.to_thread(
-            self._search_sync, query_vector, top_k, threshold
+            self._search_sync, query_vector, top_k, threshold, document_ids, max_per_document
         )
 
         elapsed_ms = (time.perf_counter() - start) * 1000
@@ -141,13 +143,21 @@ class RetrievalService:
         query_vector: list[float],
         top_k: int,
         threshold: float | None,
+        document_ids: list[str] | None = None,
+        max_per_document: int | None = None,
     ) -> list[RetrievalResult]:
-        """Run the synchronous DB search and map results."""
+        """Run the synchronous DB search and map results.
+
+        With ``max_per_document`` a wider candidate set is fetched and capped
+        per document, so one long document cannot take every slot.
+        """
+        fetch = top_k * 4 if max_per_document else top_k
         session = get_session()
         try:
-            raw_results = self._repo.search_by_vector(
-                session, query_vector, top_k=top_k, threshold=threshold,
-            )
+            kwargs = {"top_k": fetch, "threshold": threshold}
+            if document_ids:
+                kwargs["document_ids"] = document_ids
+            raw_results = self._repo.search_by_vector(session, query_vector, **kwargs)
 
             # 3. Map to RetrievalResult objects
             results = [
@@ -155,7 +165,70 @@ class RetrievalService:
             ]
         finally:
             session.close()
-        return results
+        if max_per_document:
+            per_doc: dict[str, int] = {}
+            capped = []
+            for r in results:
+                if per_doc.get(r.document_id, 0) < max_per_document:
+                    per_doc[r.document_id] = per_doc.get(r.document_id, 0) + 1
+                    capped.append(r)
+            results = capped
+        return results[:top_k]
+
+    def document_catalog(self) -> list[tuple[str, str, str | None]]:
+        """(id, source_path, title) of every document."""
+        session = get_session()
+        try:
+            return self._repo.list_document_names(session)
+        finally:
+            session.close()
+
+    def document_outlines(
+        self,
+        document_ids: list[str],
+        scores: dict[str, float] | None = None,
+        max_headings: int = 40,
+    ) -> list[RetrievalResult]:
+        """One pseudo-chunk per document listing its headings in order."""
+        from retrieval.doc_routing import display_name, outline_from_chunks
+
+        session = get_session()
+        try:
+            chunks = self._repo.get_chunks_for_documents(session, document_ids)
+            by_doc: dict[str, list[ChunkModel]] = {}
+            for c in chunks:
+                by_doc.setdefault(str(c.document_id), []).append(c)
+            out: list[RetrievalResult] = []
+            for doc_id in document_ids:
+                doc_chunks = by_doc.get(doc_id)
+                if not doc_chunks:
+                    continue
+                doc = doc_chunks[0].document
+                headings = outline_from_chunks((c.text for c in doc_chunks), max_items=max_headings)
+                if headings:
+                    body = "\n".join(f"- {h}" for h in headings)
+                else:  # no headings: fall back to the opening text
+                    body = doc_chunks[0].text[:1200]
+                name = display_name(doc.source_path)
+                out.append(
+                    RetrievalResult(
+                        chunk_id=f"outline:{doc_id}",
+                        text=f"Outline of the document \"{name}\" (its section headings in order):\n{body}",
+                        summary="",
+                        keywords=[],
+                        section_path=[],
+                        page_numbers=[],
+                        document_id=doc_id,
+                        document_title=doc.title,
+                        source_path=doc.source_path,
+                        similarity_score=round((scores or {}).get(doc_id, 0.0), 4),
+                        match_type="outline",
+                        token_count=0,
+                    )
+                )
+            return out
+        finally:
+            session.close()
 
     async def retrieve_by_keyword(
         self,
