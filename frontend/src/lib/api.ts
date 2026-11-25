@@ -138,6 +138,22 @@ export async function fetchDocuments(): Promise<DocumentsResponse> {
   return data;
 }
 
+export interface DeleteDocumentsResult {
+  deleted: string[];
+  not_found: string[];
+  chunks_deleted: number;
+}
+
+/** Delete documents (with their chunks and embeddings). One id uses DELETE /documents/{id}. */
+export async function deleteDocuments(ids: string[]): Promise<DeleteDocumentsResult> {
+  if (ids.length === 1) {
+    const { data } = await client.delete<DeleteDocumentsResult>(`/documents/${encodeURIComponent(ids[0])}`);
+    return data;
+  }
+  const { data } = await client.post<DeleteDocumentsResult>('/documents/delete', { ids });
+  return data;
+}
+
 export async function submitFeedback(req: FeedbackRequest): Promise<FeedbackResponse> {
   const { data } = await client.post<FeedbackResponse>('/feedback', req);
   return data;
