@@ -1,6 +1,6 @@
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { uploadDocument, getUploadStatus } from '../../lib/api';
+import { uploadDocument, getUploadStatus, getErrorMessage } from '../../lib/api';
 import type { UploadStage } from '../../lib/types';
 
 const ACCEPTED_MIME: Record<string, string> = {
@@ -50,6 +50,9 @@ export default function UploadModal({ open, onClose, onSuccess }: Props) {
     }
   };
 
+  // Don't leave a status poller running after the page unmounts.
+  useEffect(() => stopPolling, []);
+
   const handleClose = () => {
     if (state.kind === 'uploading' || state.kind === 'processing') return; // block close while running
     stopPolling();
@@ -86,10 +89,16 @@ export default function UploadModal({ open, onClose, onSuccess }: Props) {
 
       setState({ kind: 'processing', fileName: file.name, stage: 'queued', progress: 20 });
 
-      // Poll status every 500 ms
+      // Poll status every 500 ms. Tolerate a few transient failures (e.g. a
+      // proxy hiccup) before giving up, and never run two polls at once.
+      let failures = 0;
+      let inFlight = false;
       pollingRef.current = setInterval(async () => {
+        if (inFlight) return;
+        inFlight = true;
         try {
           const status = await getUploadStatus(job_id);
+          failures = 0;
 
           if (status.stage === 'complete') {
             stopPolling();
@@ -106,18 +115,23 @@ export default function UploadModal({ open, onClose, onSuccess }: Props) {
               progress: Math.max(status.progress, 20),
             });
           }
-        } catch {
-          stopPolling();
-          setState({ kind: 'error', message: 'Lost connection to server.' });
+        } catch (pollError) {
+          failures += 1;
+          if (failures >= 5) {
+            stopPolling();
+            setState({
+              kind: 'error',
+              message: `Lost track of the upload: ${getErrorMessage(pollError)}`,
+            });
+          }
+        } finally {
+          inFlight = false;
         }
       }, 500);
     } catch (e: unknown) {
-      const msg =
-        e instanceof Error
-          ? e.message
-          : (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail ??
-            'Upload failed.';
-      setState({ kind: 'error', message: msg });
+      // AxiosError is an Error too, so e.message would only say
+      // "Request failed with status code 415"; show the backend's reason.
+      setState({ kind: 'error', message: getErrorMessage(e) });
     }
   }, [onSuccess]);
 
