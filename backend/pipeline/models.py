@@ -17,6 +17,9 @@ class SourceCitation(BaseModel):
         default_factory=list, description="Page numbers the chunk spans."
     )
     similarity_score: float = Field(description="Cosine similarity score.")
+    snippet: str = Field(
+        default="", description="Short excerpt of the cited chunk text."
+    )
 
 
 class LatencyBreakdown(BaseModel):
@@ -54,4 +57,7 @@ class RAGResponse(BaseModel):
     token_usage: TokenUsage = Field(default_factory=TokenUsage)
     prompt_version: str = Field(
         default="", description="Which prompt template version was used."
+    )
+    model: str | None = Field(
+        default=None, description="LLM model that produced the answer."
     )

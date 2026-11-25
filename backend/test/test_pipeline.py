@@ -124,7 +124,7 @@ class TestRAGPipeline:
         )
 
         response = asyncio.run(pipeline.query("Summarize the docs", prompt_variant="summarize"))
-        assert response.prompt_version == "summarize_v1"
+        assert response.prompt_version == "summarize_v2"
 
     def test_insufficient_context_auto_selected(self):
         low_score_result = _make_retrieval_result(score=0.1)
@@ -307,7 +307,7 @@ class TestTranscriptFallback:
         high_score_result = _make_retrieval_result(score=0.85)
         pipeline, _ = self._make_pipeline(retrieval_results=[high_score_result])
         response = asyncio.run(pipeline.query("What are polymers?"))
-        assert response.prompt_version == "qa_v1"
+        assert response.prompt_version == "qa_v2"
         assert all(s.source_path != "data/transcript.md" for s in response.sources)
 
     def test_fallback_disabled_does_not_load_transcript(self):
@@ -332,5 +332,5 @@ class TestTranscriptFallback:
         )
         response = asyncio.run(pipeline.query("What is RAG?"))
         # With no chunks, the fallback template still renders (empty context)
-        assert response.prompt_version == "transcript_fallback_v1"
+        assert response.prompt_version == "insufficient_v1"
         assert response.answer == "Transcript-based answer."

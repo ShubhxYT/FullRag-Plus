@@ -14,6 +14,7 @@ from embeddings.models import EmbeddingConfig
 from embeddings.service import EmbeddingService
 from ingestion.pipeline import IngestionPipeline
 from observability.logging import get_logger
+from retrieval.doc_routing import CONTEXT_VERSION, contextual_text
 
 logger = get_logger(__name__)
 router = APIRouter()
@@ -21,6 +22,20 @@ router = APIRouter()
 # In-memory job store (thread-safe)
 _jobs: dict[str, dict] = {}
 _jobs_lock = threading.Lock()
+
+# One ingestion at a time: parsing/embedding is CPU-heavy, and loading the
+# embedding model from two threads at once fails ("Cannot copy out of meta
+# tensor"). The service (and its loaded model) is reused across uploads.
+_ingest_lock = threading.Lock()
+_embedding_service: EmbeddingService | None = None
+
+
+def _get_embedding_service() -> EmbeddingService:
+    global _embedding_service
+    if _embedding_service is None:
+        _embedding_service = EmbeddingService(config=EmbeddingConfig())
+    return _embedding_service
+
 
 # Accepted file extensions
 ACCEPTED_EXTENSIONS = {".pdf", ".docx", ".html", ".htm", ".md"}
@@ -46,6 +61,12 @@ def _set_job(job_id: str, **kwargs) -> None:
 
 
 def _run_ingestion(job_id: str, tmp_path: str, original_name: str) -> None:
+    """Run one upload's ingestion, waiting for any other upload to finish first."""
+    with _ingest_lock:
+        _run_ingestion_locked(job_id, tmp_path, original_name)
+
+
+def _run_ingestion_locked(job_id: str, tmp_path: str, original_name: str) -> None:
     """Full ingestion pipeline executed in a background thread."""
 
     def update(stage: str, progress: int) -> None:
@@ -62,9 +83,13 @@ def _run_ingestion(job_id: str, tmp_path: str, original_name: str) -> None:
         if doc is None:
             raise ValueError(f"Unsupported or failed to process: {original_name}")
 
-        # Allow original filename as title if not set by loader
-        if doc.title is None:
+        # Use the original filename as title when the loader found none or
+        # fell back to the random temp-file name (e.g. "tmpmuz366ta" for PDFs).
+        if not doc.title or doc.title == file_path.stem:
             doc.title = Path(original_name).stem
+        # Store the user's file name, not the random temp path (/tmp/tmpXXXX.md)
+        # that the loader saw; it is what the UI shows as the source.
+        doc.source_path = Path(original_name).name or doc.source_path
 
         # Stage 2 — Save document & chunks to DB
         update("saving", 60)
@@ -73,21 +98,29 @@ def _run_ingestion(job_id: str, tmp_path: str, original_name: str) -> None:
             repo = DocumentRepository()
             repo.insert_document(session, doc)
             session.flush()
+            # Known from here on, so DELETE can refuse it until ingestion ends.
+            _set_job(job_id, document_id=doc.id)
 
             # Stage 3 — Embed chunks
             update("embedding", 80)
-            chunk_texts = [c.text for c in doc.chunks if c.text.strip()]
-            chunk_ids = [c.id for c in doc.chunks if c.text.strip()]
+            kept = [c for c in doc.chunks if c.text.strip()]
+            # Embed with the document name + section in front, so questions
+            # that only name the document ("module 5") can find its chunks.
+            chunk_texts = [
+                contextual_text(c.text, doc.source_path, doc.title, c.section_path)
+                for c in kept
+            ]
+            chunk_ids = [c.id for c in kept]
 
             if chunk_texts:
-                config = EmbeddingConfig()
-                emb_service = EmbeddingService(config=config)
-                result = emb_service.embed(chunk_texts)
+                result = _get_embedding_service().embed(chunk_texts)
 
                 # Stage 4 — Store embeddings
                 update("indexing", 95)
                 embeddings = list(zip(chunk_ids, result.vectors))
-                repo.insert_bulk_embeddings(session, embeddings, result.model)
+                repo.insert_bulk_embeddings(
+                    session, embeddings, f"{result.model}#{CONTEXT_VERSION}"
+                )
 
             session.commit()
         finally:
@@ -96,13 +129,26 @@ def _run_ingestion(job_id: str, tmp_path: str, original_name: str) -> None:
         # Clean up temp file
         file_path.unlink(missing_ok=True)
 
+        # Cached "no documents" answers are stale now.
+        from api.routes.query import invalidate_response_cache
+
+        invalidate_response_cache()
         update("complete", 100)
-        _set_job(job_id, document_id=doc.id)
 
     except Exception as exc:
         logger.exception("Upload job %s failed: %s", job_id, exc)
         _set_job(job_id, stage="error", progress=0, error=str(exc))
         file_path.unlink(missing_ok=True)
+
+
+def processing_document_ids() -> set[str]:
+    """IDs of documents whose ingestion job has not finished yet."""
+    with _jobs_lock:
+        return {
+            j["document_id"]
+            for j in _jobs.values()
+            if j.get("document_id") and j["stage"] not in ("complete", "error")
+        }
 
 
 @router.post(

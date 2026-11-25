@@ -2,6 +2,10 @@
 
 A production-ready Retrieval-Augmented Generation (RAG) system combining a FastAPI Python backend with a React TypeScript frontend, backed by PostgreSQL + pgvector for semantic search.
 
+**Live demo:** [rag-ui.shubhsomani.tech](https://rag-ui.shubhsomani.tech) · **API:** [rag.shubhsomani.tech](https://rag.shubhsomani.tech/health) ([interactive docs](https://rag.shubhsomani.tech/docs))
+
+Upload PDF, DOCX, HTML or Markdown files in the Library, then ask questions in a streaming chat with numbered citations. Conversations are saved in your browser (History), and documents can be deleted again from the Library.
+
 
 ## Architecture
 
@@ -12,6 +16,8 @@ A production-ready Retrieval-Augmented Generation (RAG) system combining a FastA
 ![FullRag Architecture](backend/fullrag-architecture.png)
 
 **Request flow:** User query → React UI → FastAPI `/query` → pgvector similarity search → LLM generation (Gemini or Groq) → answer with sources returned to UI.
+
+**Retrieval details:** chunks are embedded with `BAAI/bge-base-en-v1.5` together with their document name and section path, so questions that name a document ("my modules", "module 5") find it. Questions that name documents search only those; "list all the topics…" style questions get an outline built from the documents' headings; other questions use vector search with at most 3 chunks per document. When nothing scores above `INSUFFICIENT_THRESHOLD` the answer says the documents don't cover it.
 
 ## Repository Structure
 
@@ -139,13 +145,18 @@ The backend container automatically runs `alembic upgrade head` on startup befor
 
 ## API Reference
 
-Base URL (local dev): `http://localhost:8001`
+Base URL (local dev): `http://localhost:8001` · live: `https://rag.shubhsomani.tech`
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | `GET` | `/health` | Health check — returns DB connection status |
 | `GET` | `/documents` | List all ingested documents with chunk counts |
-| `POST` | `/query` | Submit a RAG query — returns answer + sources |
+| `POST` | `/upload` | Upload a document (PDF, DOCX, HTML, MD; 50 MB); returns a `job_id` |
+| `GET` | `/upload/{job_id}/status` | Ingestion progress for an upload |
+| `DELETE` | `/documents/{id}` | Delete a document with its chunks and embeddings (404 unknown, 409 still processing) |
+| `POST` | `/documents/delete` | Bulk delete: `{"ids": [...]}` → `deleted`, `not_found` |
+| `POST` | `/query` | Submit a RAG query — returns answer + sources (optional `history` for follow-ups) |
+| `POST` | `/query/stream` | Same, streamed as NDJSON: `sources` → `delta`… → `done` (or `error`) |
 | `POST` | `/feedback` | Submit user feedback on a query result |
 | `GET` | `/evaluation/summary` | Get evaluation metrics summary |
 
@@ -183,7 +194,9 @@ All variables are read from `.env` in the project root (Docker Compose) or `back
 | `GENERATION_MODEL` | `gemini-2.5-flash` | No | Gemini model name |
 | `GENERATION_TEMPERATURE` | `0.3` | No | LLM sampling temperature |
 | `GENERATION_MAX_TOKENS` | `2048` | No | Maximum output tokens |
-| `GROQ_MODEL` | `llama-3.3-70b-versatile` | No | Groq model name |
+| `GROQ_MODEL` | `openai/gpt-oss-120b` | No | Primary Groq model (must be available to your key) |
+| `GROQ_FALLBACK_MODELS` | `openai/gpt-oss-20b,qwen/qwen3.8-27b` | No | Comma-separated models tried when the primary is missing or rate-limited |
+| `GROQ_REASONING_EFFORT` | `low` | No | gpt-oss reasoning effort (low/medium/high) |
 | `LOG_LEVEL` | `INFO` | No | `DEBUG` / `INFO` / `WARNING` / `ERROR` |
 | `LOG_FORMAT` | `json` | No | `json` or `text` |
 | `CACHE_TTL_SECONDS` | `3600` | No | Response cache TTL |
@@ -191,6 +204,7 @@ All variables are read from `.env` in the project root (Docker Compose) or `back
 | `CONTINUOUS_EVAL_ENABLED` | `true` | No | Toggle background evaluation loop |
 | `TRANSCRIPT_FALLBACK_ENABLED` | `true` | No | Enable transcript file fallback |
 | `TRANSCRIPT_PATH` | `data/transcript.md` | No | Path to transcript fallback file |
+| `INSUFFICIENT_THRESHOLD` | `0.45` | No | Below this best similarity the answer says the documents don't cover the question |
 
 ## Document Ingestion (CLI)
 

@@ -40,6 +40,11 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
     container_name: fullrag-plus-frontend
+    environment:
+      # nginx proxies /api/* to this host (the compose service name here;
+      # the image default "rag-backend" is the Coolify network alias)
+      BACKEND_HOST: backend
+      BACKEND_PORT: "8001"
     ports:
       - "80:80"
     depends_on:

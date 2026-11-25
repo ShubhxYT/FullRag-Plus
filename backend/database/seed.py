@@ -74,7 +74,12 @@ def seed_from_staging(
 
             # Generate and insert embeddings for each chunk
             if doc.chunks:
-                chunk_texts = [c.text for c in doc.chunks]
+                from retrieval.doc_routing import CONTEXT_VERSION, contextual_text
+
+                chunk_texts = [
+                    contextual_text(c.text, doc.source_path, doc.title, c.section_path)
+                    for c in doc.chunks
+                ]
                 embed_result = embedding_service.embed(chunk_texts)
 
                 embedding_pairs = [
@@ -82,7 +87,7 @@ def seed_from_staging(
                     for chunk, vector in zip(doc.chunks, embed_result.vectors)
                 ]
                 repo.insert_bulk_embeddings(
-                    session, embedding_pairs, embed_result.model
+                    session, embedding_pairs, f"{embed_result.model}#{CONTEXT_VERSION}"
                 )
                 stats["embeddings"] += len(embedding_pairs)
 

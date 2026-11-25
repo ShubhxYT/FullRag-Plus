@@ -169,6 +169,7 @@ class DocumentRepository:
         query_vector: list[float],
         top_k: int = 5,
         threshold: float | None = None,
+        document_ids: list[str] | None = None,
     ) -> list[tuple[ChunkModel, float]]:
         """Cosine similarity search over chunk embeddings.
 
@@ -199,9 +200,31 @@ class DocumentRepository:
 
         if threshold is not None:
             stmt = stmt.where(distance <= (1 - threshold))
+        if document_ids:
+            stmt = stmt.where(ChunkModel.document_id.in_(document_ids))
 
         results = session.execute(stmt).all()
         return [(row[0], float(row[1])) for row in results]
+
+    def list_document_names(self, session: Session) -> list[tuple[str, str, str | None]]:
+        """(id, source_path, title) for every document."""
+        rows = session.execute(
+            select(DocumentModel.id, DocumentModel.source_path, DocumentModel.title)
+        ).all()
+        return [(str(r.id), r.source_path, r.title) for r in rows]
+
+    def get_chunks_for_documents(
+        self, session: Session, document_ids: list[str]
+    ) -> list[ChunkModel]:
+        """All chunks of the given documents, in document then reading order."""
+        if not document_ids:
+            return []
+        stmt = (
+            select(ChunkModel)
+            .where(ChunkModel.document_id.in_(document_ids))
+            .order_by(ChunkModel.document_id, ChunkModel.position)
+        )
+        return list(session.execute(stmt).scalars().all())
 
     def search_by_keyword(
         self,

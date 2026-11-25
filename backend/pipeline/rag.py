@@ -1,8 +1,10 @@
 """RAG pipeline orchestrator — wires retrieval, context, prompts, and generation."""
 
 import asyncio
+import re
 import time
 from pathlib import Path
+from typing import AsyncIterator
 
 from observability.logging import get_logger
 
@@ -15,7 +17,7 @@ from config.settings import (
 )
 from generation.context_manager import ContextManager
 from generation.llm_service import GenerationProvider, get_generation_provider
-from generation.models import GenerationConfig, PromptVariant
+from generation.models import GenerationConfig, GenerationResponse, PromptVariant
 from generation.prompts import PromptRegistry
 from pipeline.cache import ResponseCache
 from pipeline.models import (
@@ -23,10 +25,30 @@ from pipeline.models import (
     RAGResponse,
     SourceCitation,
 )
+from retrieval.doc_routing import is_overview, match_documents
 from retrieval.models import RetrievalResult
 from retrieval.service import RetrievalService
 
 logger = get_logger(__name__)
+
+
+_CITATION_RE = re.compile(r"【\s*(?:Source\s*)?(\d+)[^】]*】")
+
+
+_OTHER_BRACKET_RE = re.compile(r"\s?【[^】\d]*】")
+
+
+def normalize_citations(text: str) -> str:
+    """gpt-oss models like to cite as 【1†L2-L3】; rewrite those to [1] and
+    drop non-numeric ones such as 【Source: transcript】."""
+    text = _CITATION_RE.sub(lambda m: f"[{m.group(1)}]", text)
+    return _OTHER_BRACKET_RE.sub("", text)
+
+
+def _snippet(text: str | None, limit: int = 280) -> str:
+    """Collapse whitespace and cut the chunk text to a short excerpt."""
+    flat = " ".join((text or "").split())
+    return flat if len(flat) <= limit else flat[: limit - 1].rstrip() + "…"
 
 
 class RAGPipeline:
@@ -73,64 +95,159 @@ class RAGPipeline:
         else:
             self._response_cache = None
 
-    async def query(
+    def invalidate_cache(self) -> None:
+        """Drop cached answers (e.g. after documents were added or deleted)."""
+        if self._response_cache is not None:
+            self._response_cache.invalidate_all()
+
+    # How many prior turns are sent to the LLM, and how much of each.
+    MAX_HISTORY_TURNS = 6
+    MAX_HISTORY_CHARS = 2000
+
+    @classmethod
+    def _trim_history(cls, history: list[dict[str, str]] | None) -> list[dict[str, str]]:
+        turns = [
+            {"role": t["role"], "content": t["content"][: cls.MAX_HISTORY_CHARS]}
+            for t in (history or [])
+            if t.get("role") in ("user", "assistant") and (t.get("content") or "").strip()
+        ]
+        return turns[-cls.MAX_HISTORY_TURNS :]
+
+    @staticmethod
+    def _retrieval_query(question: str, history: list[dict[str, str]]) -> str:
+        """Follow-ups like "what about its drawbacks?" retrieve poorly on their
+        own, so prepend the previous user question as retrieval context."""
+        previous = [t["content"] for t in history if t["role"] == "user"]
+        if not previous:
+            return question
+        return f"{previous[-1]}\n{question}"
+
+    # Most chunks one document may contribute to an ordinary answer.
+    MAX_CHUNKS_PER_DOCUMENT = 3
+    # Documents outlined for an overview question that names none.
+    MAX_OVERVIEW_DOCUMENTS = 4
+
+    def _catalog(self) -> list[tuple[str, str, str | None]]:
+        catalog = getattr(self._retrieval, "document_catalog", None)
+        if not callable(catalog):
+            return []
+        try:
+            docs = catalog()
+        except Exception as exc:  # routing is an optimisation; never fail the query
+            logger.warning("Document catalog unavailable: %s", exc)
+            return []
+        return docs if isinstance(docs, list) else []
+
+    async def _route_and_retrieve(
+        self, question: str, history: list[dict[str, str]], top_k: int
+    ) -> tuple[list[RetrievalResult], bool]:
+        """Pick the retrieval strategy for a question.
+
+        * names documents ("my modules", "module 5")  -> search only those
+        * overview ("list all the topics ...")         -> outline of the
+          named documents, or of the documents the best chunks come from
+        * otherwise                                    -> plain vector search
+
+        Returns (results, routed) where routed means a document-aware path
+        was taken.
+        """
+        rq = self._retrieval_query(question, history)
+        catalog = await asyncio.to_thread(self._catalog) if hasattr(self._retrieval, "document_catalog") else []
+        named = match_documents(question, [(d[0], d[1]) for d in catalog]) if catalog else []
+        if not named and history and catalog:
+            named = match_documents(rq, [(d[0], d[1]) for d in catalog])
+        overview = bool(catalog) and is_overview(question)
+
+        if named or overview:
+            # Rank chunks of the candidate docs (also gives per-doc scores).
+            ranked = await self._retrieval.retrieve(
+                rq,
+                top_k=max(top_k, 8) if overview else top_k,
+                document_ids=named or None,
+                max_per_document=None if named else self.MAX_CHUNKS_PER_DOCUMENT,
+            )
+            best: dict[str, float] = {}
+            order: list[str] = []
+            for r in ranked.results:
+                if r.document_id not in best:
+                    order.append(r.document_id)
+                    best[r.document_id] = r.similarity_score
+            if overview:
+                doc_ids = named or order[: self.MAX_OVERVIEW_DOCUMENTS]
+                # keep the named docs in a natural order (by file name)
+                if named:
+                    names = {d[0]: d[1] for d in catalog}
+                    doc_ids = sorted(named, key=lambda i: names.get(i, ""))
+                outlines = await asyncio.to_thread(self._retrieval.document_outlines, doc_ids, best)
+                logger.info(
+                    "RAG routing: overview",
+                    extra={"component": "pipeline", "documents": len(outlines), "named": bool(named)},
+                )
+                if outlines:
+                    return outlines, True
+            logger.info(
+                "RAG routing: named documents",
+                extra={"component": "pipeline", "documents": len(named)},
+            )
+            return ranked.results, bool(named)
+
+        kwargs = {"top_k": top_k}
+        if catalog:
+            kwargs["max_per_document"] = self.MAX_CHUNKS_PER_DOCUMENT
+        response = await self._retrieval.retrieve(rq, **kwargs)
+        return response.results, False
+
+    def _cache_key(self, question: str, history: list[dict[str, str]]) -> str | None:
+        """Only stand-alone questions are cached (answers depend on history)."""
+        if history:
+            return None
+        return question
+
+    async def _prepare(
         self,
         question: str,
-        top_k: int = 5,
-        prompt_variant: str | None = None,
-    ) -> RAGResponse:
-        """Execute the full RAG pipeline for a question.
-
-        Args:
-            question: The user's question.
-            top_k: Number of chunks to retrieve.
-            prompt_variant: Explicit prompt variant name, or None for auto-select.
-
-        Returns:
-            RAGResponse with answer, sources, latency, and token usage.
-        """
-        # Check response cache
-        if self._cache_enabled and self._response_cache is not None:
-            cached = self._response_cache.get(question)
-            if cached is not None:
-                return cached
-
-        total_start = time.perf_counter()
-        latency = LatencyBreakdown()
-
-        # Step 1: Retrieve relevant chunks
+        top_k: int,
+        prompt_variant: str | None,
+        history: list[dict[str, str]],
+        latency: LatencyBreakdown,
+    ):
+        """Retrieve, fit context and render the prompt."""
         logger.info(
             "RAG pipeline: retrieving",
             extra={"component": "pipeline", "query": question[:80], "top_k": top_k},
         )
         retrieval_start = time.perf_counter()
-        retrieval_response = await self._retrieval.retrieve(question, top_k=top_k)
+        results, routed = await self._route_and_retrieve(question, history, top_k)
         latency.retrieval_ms = round((time.perf_counter() - retrieval_start) * 1000, 2)
 
-        # Step 2: Fit context to token budget
         context_start = time.perf_counter()
-        fitted_chunks = self._context_manager.fit_context(retrieval_response.results)
+        fitted_chunks = self._context_manager.fit_context(results)
         latency.context_ms = round((time.perf_counter() - context_start) * 1000, 2)
 
-        # Step 3: Select prompt template
         if prompt_variant:
             variant = PromptVariant(prompt_variant)
+        elif routed and fitted_chunks:
+            # The question named documents (or asked for an overview) and we
+            # have their content: answer from it, whatever the raw scores are.
+            variant = PromptVariant.QA
         else:
             variant = self._prompt_registry.select_template(question, fitted_chunks)
 
-        # Step 3b: Transcript fallback — override INSUFFICIENT when enabled
+        # Transcript fallback — override INSUFFICIENT when enabled
         if variant == PromptVariant.INSUFFICIENT and self._transcript_fallback_enabled:
             logger.info(
                 "RAG pipeline: insufficient context — activating transcript fallback",
                 extra={"component": "pipeline", "transcript_path": self._transcript_path},
             )
-            fitted_chunks = self._load_transcript_as_chunks()
-            variant = PromptVariant.TRANSCRIPT_FALLBACK
+            transcript_chunks = self._load_transcript_as_chunks()
+            if transcript_chunks:
+                fitted_chunks = transcript_chunks
+                variant = PromptVariant.TRANSCRIPT_FALLBACK
+            # else: no transcript file -> keep INSUFFICIENT so the model says
+            # the documents don't cover it instead of talking about a
+            # "transcript" the user never provided.
 
-        # Step 4: Render prompt
         rendered = self._prompt_registry.render(variant, question, fitted_chunks)
-
-        # Step 5: Generate answer (blocking I/O — offload to thread)
         logger.info(
             "RAG pipeline: generating",
             extra={
@@ -138,22 +255,60 @@ class RAGPipeline:
                 "variant": rendered.variant.value,
                 "version": rendered.version,
                 "chunk_count": len(fitted_chunks),
+                "history_turns": len(history),
             },
         )
+        return fitted_chunks, rendered
+
+    def _generate_kwargs(self, history: list[dict[str, str]]) -> dict:
+        # Only pass history when there is some, so providers/mocks with the
+        # original 3-argument signature keep working.
+        return {"history": history} if history else {}
+
+    async def query(
+        self,
+        question: str,
+        top_k: int = 5,
+        prompt_variant: str | None = None,
+        history: list[dict[str, str]] | None = None,
+    ) -> RAGResponse:
+        """Execute the full RAG pipeline for a question.
+
+        Args:
+            question: The user's question.
+            top_k: Number of chunks to retrieve.
+            prompt_variant: Explicit prompt variant name, or None for auto-select.
+            history: Earlier conversation turns (oldest first) for follow-ups.
+
+        Returns:
+            RAGResponse with answer, sources, latency, and token usage.
+        """
+        history = self._trim_history(history)
+        cache_key = self._cache_key(question, history)
+        if cache_key and self._cache_enabled and self._response_cache is not None:
+            cached = self._response_cache.get(cache_key)
+            if cached is not None:
+                return cached
+
+        total_start = time.perf_counter()
+        latency = LatencyBreakdown()
+        fitted_chunks, rendered = await self._prepare(
+            question, top_k, prompt_variant, history, latency
+        )
+
+        # Generate answer (blocking I/O — offload to thread)
         generation_start = time.perf_counter()
         gen_response = await asyncio.to_thread(
             self._provider.generate,
             rendered.system_prompt,
             rendered.user_prompt,
             self._generation_config,
+            **self._generate_kwargs(history),
         )
         latency.generation_ms = round((time.perf_counter() - generation_start) * 1000, 2)
-
-        # Step 6: Package response
         latency.total_ms = round((time.perf_counter() - total_start) * 1000, 2)
 
         sources = self._build_citations(fitted_chunks)
-
         logger.info(
             "RAG pipeline complete",
             extra={
@@ -167,18 +322,105 @@ class RAGPipeline:
         )
 
         response = RAGResponse(
-            answer=gen_response.text,
+            answer=normalize_citations(gen_response.text),
             sources=sources,
             latency=latency,
             token_usage=gen_response.token_usage,
             prompt_version=rendered.version,
+            model=getattr(gen_response, "model", None),
         )
 
-        # Populate cache
-        if self._cache_enabled and self._response_cache is not None:
-            self._response_cache.set(question, response)
+        if cache_key and self._cache_enabled and self._response_cache is not None:
+            self._response_cache.set(cache_key, response)
 
         return response
+
+    async def stream_query(
+        self,
+        question: str,
+        top_k: int = 5,
+        prompt_variant: str | None = None,
+        history: list[dict[str, str]] | None = None,
+    ) -> AsyncIterator[dict]:
+        """Run the pipeline and stream events as they happen.
+
+        Yields dicts: {"type": "sources", "sources": [...], "prompt_version"},
+        then {"type": "delta", "text": "..."} for each chunk of the answer,
+        then {"type": "done", "response": RAGResponse}. Errors propagate.
+        Providers without generate_stream fall back to one big delta.
+        """
+        history = self._trim_history(history)
+        cache_key = self._cache_key(question, history)
+        if cache_key and self._cache_enabled and self._response_cache is not None:
+            cached = self._response_cache.get(cache_key)
+            if cached is not None:
+                yield {"type": "sources", "sources": cached.sources, "prompt_version": cached.prompt_version}
+                yield {"type": "delta", "text": cached.answer}
+                yield {"type": "done", "response": cached}
+                return
+
+        total_start = time.perf_counter()
+        latency = LatencyBreakdown()
+        fitted_chunks, rendered = await self._prepare(
+            question, top_k, prompt_variant, history, latency
+        )
+        sources = self._build_citations(fitted_chunks)
+        yield {"type": "sources", "sources": sources, "prompt_version": rendered.version}
+
+        generation_start = time.perf_counter()
+        final: GenerationResponse | None = None
+        stream_fn = getattr(self._provider, "generate_stream", None)
+        if stream_fn is None:
+            final = await asyncio.to_thread(
+                self._provider.generate,
+                rendered.system_prompt,
+                rendered.user_prompt,
+                self._generation_config,
+                **self._generate_kwargs(history),
+            )
+            yield {"type": "delta", "text": final.text}
+        else:
+            iterator = stream_fn(
+                rendered.system_prompt,
+                rendered.user_prompt,
+                self._generation_config,
+                **self._generate_kwargs(history),
+            )
+            sentinel = object()
+            while True:
+                item = await asyncio.to_thread(next, iterator, sentinel)
+                if item is sentinel:
+                    break
+                if isinstance(item, GenerationResponse):
+                    final = item
+                else:
+                    yield {"type": "delta", "text": item}
+        if final is None:
+            raise RuntimeError("Generation produced no response")
+
+        latency.generation_ms = round((time.perf_counter() - generation_start) * 1000, 2)
+        latency.total_ms = round((time.perf_counter() - total_start) * 1000, 2)
+        response = RAGResponse(
+            answer=normalize_citations(final.text),
+            sources=sources,
+            latency=latency,
+            token_usage=final.token_usage,
+            prompt_version=rendered.version,
+            model=final.model,
+        )
+        logger.info(
+            "RAG pipeline (stream) complete",
+            extra={
+                "component": "pipeline",
+                "answer_len": len(final.text),
+                "sources": len(sources),
+                "total_ms": latency.total_ms,
+                "model": final.model,
+            },
+        )
+        if cache_key and self._cache_enabled and self._response_cache is not None:
+            self._response_cache.set(cache_key, response)
+        yield {"type": "done", "response": response}
 
     def _load_transcript_as_chunks(self) -> list[RetrievalResult]:
         """Load the transcript file and split into token-budget-aware chunks.
@@ -234,6 +476,7 @@ class RAGPipeline:
                 chunk_summary=chunk.summary,
                 page_numbers=chunk.page_numbers,
                 similarity_score=chunk.similarity_score,
+                snippet=_snippet(chunk.text),
             )
             for chunk in chunks
         ]

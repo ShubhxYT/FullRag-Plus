@@ -1,8 +1,9 @@
 """LLM service with multi-provider support for enrichment and generation."""
 
 import json
+import re
 import time
-from typing import Protocol, runtime_checkable
+from typing import Iterator, Protocol, runtime_checkable
 
 from google import genai
 from google.genai import types
@@ -12,7 +13,9 @@ from config.settings import (
     get_gemini_api_key,
     get_groq_api_key,
     get_groq_base_url,
+    get_groq_fallback_models,
     get_groq_model,
+    get_groq_reasoning_effort,
     get_mistral_api_key,
     get_mistral_model,
 )
@@ -36,6 +39,7 @@ class GenerationProvider(Protocol):
         system_prompt: str,
         user_prompt: str,
         config: GenerationConfig,
+        history: list[dict[str, str]] | None = None,
     ) -> GenerationResponse:
         """Generate a response from the LLM.
 
@@ -208,17 +212,55 @@ class MistralEnrichmentProvider:
         )
 
 
+ChatHistory = list[dict[str, str]]
+"""Prior conversation turns: [{"role": "user"|"assistant", "content": str}, ...]."""
+
+_THINK_RE = re.compile(r"<think>.*?(</think>|$)", re.DOTALL | re.IGNORECASE)
+
+
+def _strip_reasoning(text: str) -> str:
+    """Remove <think>...</think> blocks some reasoning models emit inline."""
+    return _THINK_RE.sub("", text).strip()
+
+
+def _normalize_history(history: ChatHistory | None) -> ChatHistory:
+    """Keep only well-formed user/assistant turns."""
+    turns: ChatHistory = []
+    for turn in history or []:
+        role = turn.get("role")
+        content = (turn.get("content") or "").strip()
+        if role in ("user", "assistant") and content:
+            turns.append({"role": role, "content": content})
+    return turns
+
+
 class GeminiGenerationProvider:
     """Gemini provider for free-text answer generation."""
 
     def __init__(self) -> None:
         self._client = genai.Client(api_key=get_gemini_api_key())
 
+    @staticmethod
+    def _contents(user_prompt: str, history: ChatHistory | None):
+        turns = _normalize_history(history)
+        if not turns:
+            return user_prompt
+        contents = [
+            types.Content(
+                role="model" if t["role"] == "assistant" else "user",
+                parts=[types.Part(text=t["content"])],
+            )
+            for t in turns
+        ]
+        contents.append(types.Content(role="user", parts=[types.Part(text=user_prompt)]))
+        return contents
+
     def generate(
         self,
         system_prompt: str,
         user_prompt: str,
         config: GenerationConfig,
+        history: ChatHistory | None = None,
     ) -> GenerationResponse:
         """Generate a free-text answer using Gemini.
 
@@ -226,6 +268,7 @@ class GeminiGenerationProvider:
             system_prompt: System instruction for the LLM.
             user_prompt: User message with context and query.
             config: Generation configuration.
+            history: Optional prior conversation turns.
 
         Returns:
             GenerationResponse with generated text and token usage.
@@ -240,7 +283,7 @@ class GeminiGenerationProvider:
             try:
                 response = self._client.models.generate_content(
                     model=config.model_name,
-                    contents=user_prompt,
+                    contents=self._contents(user_prompt, history),
                     config=types.GenerateContentConfig(
                         system_instruction=system_prompt,
                         temperature=config.temperature,
@@ -285,88 +328,261 @@ class GeminiGenerationProvider:
             f"Generation failed after {max_retries} retries: {last_error}"
         )
 
+    def generate_stream(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        config: GenerationConfig,
+        history: ChatHistory | None = None,
+    ) -> Iterator[str | GenerationResponse]:
+        """Stream an answer: yields text deltas, then a final GenerationResponse."""
+        parts: list[str] = []
+        usage = TokenUsage()
+        stream = self._client.models.generate_content_stream(
+            model=config.model_name,
+            contents=self._contents(user_prompt, history),
+            config=types.GenerateContentConfig(
+                system_instruction=system_prompt,
+                temperature=config.temperature,
+                max_output_tokens=config.max_output_tokens,
+            ),
+        )
+        for chunk in stream:
+            if chunk.text:
+                parts.append(chunk.text)
+                yield chunk.text
+            if chunk.usage_metadata:
+                usage = TokenUsage(
+                    prompt_tokens=chunk.usage_metadata.prompt_token_count or 0,
+                    completion_tokens=chunk.usage_metadata.candidates_token_count or 0,
+                    total_tokens=chunk.usage_metadata.total_token_count or 0,
+                )
+        text = "".join(parts)
+        if not text:
+            raise RuntimeError("Empty response from Gemini")
+        yield GenerationResponse(text=text, model=config.model_name, token_usage=usage)
+
 
 class GroqProvider:
-    """Groq provider using the OpenAI-compatible API."""
+    """Groq provider using the OpenAI-compatible API.
 
-    def __init__(self) -> None:
+    Tries GROQ_MODEL first, then each of GROQ_FALLBACK_MODELS. A model that is
+    missing/decommissioned (404/400), forbidden (403) or rate-limited (429)
+    is skipped immediately; transient errors (timeouts, 5xx) are retried.
+    """
+
+    def __init__(self, models: list[str] | None = None) -> None:
         import openai
 
-        self._model_name = get_groq_model()
+        self._openai = openai
+        primary = get_groq_model()
+        chain = models or [primary, *get_groq_fallback_models()]
+        # de-duplicate, keep order
+        self._models: list[str] = list(dict.fromkeys(m for m in chain if m))
+        self._model_name = self._models[0]
         self._client = openai.OpenAI(
             api_key=get_groq_api_key(),
             base_url=get_groq_base_url(),
+            timeout=60.0,
+            max_retries=0,
         )
+
+    @property
+    def models(self) -> list[str]:
+        """Model chain tried in order."""
+        return list(self._models)
+
+    def _messages(self, system_prompt: str, user_prompt: str, history: ChatHistory | None):
+        return [
+            {"role": "system", "content": system_prompt},
+            *_normalize_history(history),
+            {"role": "user", "content": user_prompt},
+        ]
+
+    @staticmethod
+    def _extra_body(model: str) -> dict:
+        """Per-family knobs so reasoning never leaks into the answer text."""
+        if model.startswith("openai/gpt-oss"):
+            return {"reasoning_effort": get_groq_reasoning_effort(), "include_reasoning": False}
+        if model.startswith("qwen/"):
+            return {"reasoning_format": "hidden"}
+        return {}
+
+    def _skip_model(self, error: Exception) -> bool:
+        """True if the error means 'try the next model' rather than 'retry'."""
+        o = self._openai
+        if isinstance(error, (o.NotFoundError, o.PermissionDeniedError, o.RateLimitError)):
+            return True
+        if isinstance(error, o.BadRequestError):
+            msg = str(error).lower()
+            return any(k in msg for k in ("model", "decommission", "not supported"))
+        return False
 
     def generate(
         self,
         system_prompt: str,
         user_prompt: str,
         config: GenerationConfig,
+        history: ChatHistory | None = None,
     ) -> GenerationResponse:
-        """Generate a free-text answer using Groq.
+        """Generate a free-text answer using Groq, falling back across models.
 
         Args:
             system_prompt: System instruction for the LLM.
             user_prompt: User message with context and query.
             config: Generation configuration.
+            history: Optional prior conversation turns.
 
         Returns:
             GenerationResponse with generated text and token usage.
 
         Raises:
-            RuntimeError: If all retries are exhausted.
+            RuntimeError: If every model in the chain fails.
         """
         max_retries = 3
-        last_error: Exception | None = None
+        errors: list[str] = []
 
-        for attempt in range(1, max_retries + 1):
-            try:
-                response = self._client.chat.completions.create(
-                    model=self._model_name,
-                    messages=[
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_prompt},
-                    ],
-                    temperature=config.temperature,
-                    max_tokens=config.max_output_tokens,
-                )
-
-                choice = response.choices[0]
-                raw_text = choice.message.content or ""
-                if not raw_text:
-                    raise ValueError("Empty response from Groq")
-
-                token_usage = TokenUsage()
-                if response.usage:
-                    token_usage = TokenUsage(
-                        prompt_tokens=response.usage.prompt_tokens or 0,
-                        completion_tokens=response.usage.completion_tokens or 0,
-                        total_tokens=response.usage.total_tokens or 0,
+        for model in self._models:
+            for attempt in range(1, max_retries + 1):
+                try:
+                    response = self._client.chat.completions.create(
+                        model=model,
+                        messages=self._messages(system_prompt, user_prompt, history),
+                        temperature=config.temperature,
+                        max_tokens=config.max_output_tokens,
+                        extra_body=self._extra_body(model) or None,
                     )
 
-                return GenerationResponse(
-                    text=raw_text,
-                    model=self._model_name,
-                    token_usage=token_usage,
-                    finish_reason=choice.finish_reason or "stop",
-                )
+                    choice = response.choices[0]
+                    raw_text = _strip_reasoning(choice.message.content or "")
+                    if not raw_text:
+                        raise ValueError("Empty response from Groq")
 
-            except Exception as e:
-                last_error = e
-                if attempt < max_retries:
-                    wait = 2**attempt
-                    logger.warning(
-                        "Groq attempt %d/%d failed: %s. Retrying in %ds...",
-                        attempt,
-                        max_retries,
-                        e,
-                        wait,
+                    token_usage = TokenUsage()
+                    if response.usage:
+                        token_usage = TokenUsage(
+                            prompt_tokens=response.usage.prompt_tokens or 0,
+                            completion_tokens=response.usage.completion_tokens or 0,
+                            total_tokens=response.usage.total_tokens or 0,
+                        )
+
+                    if model != self._models[0]:
+                        logger.warning("Groq: answered with fallback model %s", model)
+                    return GenerationResponse(
+                        text=raw_text,
+                        model=model,
+                        token_usage=token_usage,
+                        finish_reason=choice.finish_reason or "stop",
                     )
-                    time.sleep(wait)
+
+                except Exception as e:
+                    if self._skip_model(e):
+                        logger.warning("Groq model %s unavailable: %s", model, e)
+                        errors.append(f"{model}: {e}")
+                        break
+                    if attempt < max_retries:
+                        wait = 2**attempt
+                        logger.warning(
+                            "Groq attempt %d/%d on %s failed: %s. Retrying in %ds...",
+                            attempt,
+                            max_retries,
+                            model,
+                            e,
+                            wait,
+                        )
+                        time.sleep(wait)
+                    else:
+                        errors.append(f"{model}: {e}")
 
         raise RuntimeError(
-            f"Groq generation failed after {max_retries} retries: {last_error}"
+            "Groq generation failed for all models ("
+            + ", ".join(self._models)
+            + "). Last error: "
+            + (errors[-1] if errors else "unknown")
+        )
+
+    def generate_stream(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        config: GenerationConfig,
+        history: ChatHistory | None = None,
+    ) -> Iterator[str | GenerationResponse]:
+        """Stream an answer: yields text deltas, then a final GenerationResponse.
+
+        Falls back to the next model only if a model fails before producing
+        any text (so the user never sees two half-answers spliced together).
+        """
+        errors: list[str] = []
+        for model in self._models:
+            emitted = False
+            try:
+                stream = self._client.chat.completions.create(
+                    model=model,
+                    messages=self._messages(system_prompt, user_prompt, history),
+                    temperature=config.temperature,
+                    max_tokens=config.max_output_tokens,
+                    stream=True,
+                    stream_options={"include_usage": True},
+                    extra_body=self._extra_body(model) or None,
+                )
+                parts: list[str] = []
+                usage = TokenUsage()
+                finish = "stop"
+                in_think = False
+                for chunk in stream:
+                    if getattr(chunk, "usage", None):
+                        usage = TokenUsage(
+                            prompt_tokens=chunk.usage.prompt_tokens or 0,
+                            completion_tokens=chunk.usage.completion_tokens or 0,
+                            total_tokens=chunk.usage.total_tokens or 0,
+                        )
+                    if not chunk.choices:
+                        continue
+                    choice = chunk.choices[0]
+                    if choice.finish_reason:
+                        finish = choice.finish_reason
+                    delta = choice.delta.content or ""
+                    if not delta:
+                        continue
+                    # drop inline <think> blocks if a model emits them anyway
+                    if "<think>" in delta:
+                        in_think = True
+                        delta = delta.split("<think>", 1)[0]
+                    if in_think:
+                        if "</think>" in delta:
+                            in_think = False
+                            delta = delta.split("</think>", 1)[1]
+                        else:
+                            continue
+                    if not delta:
+                        continue
+                    if not emitted:
+                        delta = delta.lstrip()
+                        if not delta:
+                            continue
+                    parts.append(delta)
+                    emitted = True
+                    yield delta
+                text = "".join(parts).strip()
+                if not text:
+                    raise ValueError("Empty response from Groq")
+                if model != self._models[0]:
+                    logger.warning("Groq: streamed with fallback model %s", model)
+                yield GenerationResponse(
+                    text=text, model=model, token_usage=usage, finish_reason=finish
+                )
+                return
+            except Exception as e:
+                if emitted:
+                    raise RuntimeError(f"Groq stream interrupted ({model}): {e}") from e
+                logger.warning("Groq stream on %s failed before output: %s", model, e)
+                errors.append(f"{model}: {e}")
+        raise RuntimeError(
+            "Groq generation failed for all models ("
+            + ", ".join(self._models)
+            + "). Last error: "
+            + (errors[-1] if errors else "unknown")
         )
 
 
@@ -374,7 +590,7 @@ def get_generation_provider(provider_name: str = "gemini") -> GenerationProvider
     """Factory function to get a generation provider by name.
 
     Args:
-        provider_name: Provider name ('gemini' or 'cerebras').
+        provider_name: Provider name ('gemini' or 'groq').
 
     Returns:
         A GenerationProvider instance.

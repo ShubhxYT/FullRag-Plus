@@ -50,7 +50,10 @@ def render(
             context_parts.append(f"{header}\n{chunk.text[:200]}...")
         context_block = "\n\n---\n\n".join(context_parts)
     else:
-        context_block = "(No relevant documents found.)"
+        context_block = (
+            "(No relevant documents found. The knowledge base may be empty; suggest "
+            "uploading relevant documents on the Library page.)"
+        )
 
     return RenderedPrompt(
         system_prompt=SYSTEM_PROMPT,

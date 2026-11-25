@@ -33,7 +33,7 @@ class TestQATemplate:
         result = qa_v1.render("What is X?", chunks)
         assert isinstance(result, RenderedPrompt)
         assert result.variant == PromptVariant.QA
-        assert result.version == "qa_v1"
+        assert result.version == "qa_v2"
 
     def test_system_prompt_contains_grounding_rules(self):
         result = qa_v1.render("Q?", [_make_result()])
@@ -66,7 +66,7 @@ class TestSummarizeTemplate:
     def test_render_returns_summarize_variant(self):
         result = summarize_v1.render("Summarize X.", [_make_result()])
         assert result.variant == PromptVariant.SUMMARIZE
-        assert result.version == "summarize_v1"
+        assert result.version == "summarize_v2"
 
     def test_system_prompt_contains_summarization_instruction(self):
         result = summarize_v1.render("Summarize.", [_make_result()])

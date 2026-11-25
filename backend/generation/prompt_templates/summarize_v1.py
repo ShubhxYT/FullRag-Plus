@@ -3,7 +3,7 @@
 from generation.models import PromptVariant, RenderedPrompt
 from retrieval.models import RetrievalResult
 
-VERSION = "summarize_v1"
+VERSION = "summarize_v2"  # v2: numeric [n] citations
 
 SYSTEM_PROMPT = """\
 You are a summarization assistant. Your task is to produce a clear, concise \
@@ -12,9 +12,11 @@ summary of the provided context documents.
 Rules:
 1. Summarize ONLY the information present in the provided context.
 2. Organize the summary logically, grouping related information together.
-3. Cite sources using [Source: Document Title, Page X] where relevant.
-4. Keep the summary focused and avoid unnecessary repetition.
-5. End with a "Sources:" section listing all documents referenced.\
+3. Cite sources inline with the bracketed Source number, e.g. [1] or [2][3] \
+(plain square brackets only).
+4. Keep the summary focused and avoid unnecessary repetition. Use Markdown \
+headings and bullet lists where helpful.
+5. Do NOT add a separate "Sources" list; the interface shows the sources.\
 """
 
 USER_TEMPLATE = """\

@@ -1,9 +1,22 @@
-import { useState, type FormEvent } from 'react';
+import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
 
 export default function SearchInput() {
   const [query, setQuery] = useState('');
   const navigate = useNavigate();
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  // The input advertises a ⌘K / Ctrl+K shortcut; make it actually focus.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        inputRef.current?.focus();
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
 
   const handleSubmit = (e: FormEvent) => {
     e.preventDefault();
@@ -20,6 +33,8 @@ export default function SearchInput() {
           <span className="material-symbols-outlined text-2xl">search</span>
         </div>
         <input
+          ref={inputRef}
+          aria-label="Ask anything about your documents"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           className="w-full bg-transparent border-none focus:ring-0 text-lg font-body py-4 placeholder:text-slate-400 text-white"
@@ -33,7 +48,9 @@ export default function SearchInput() {
           </kbd>
           <button
             type="submit"
-            className="bg-indigo-600 hover:bg-indigo-700 text-white p-3 rounded-xl transition-all active:scale-95 shadow-md"
+            aria-label="Search"
+            disabled={!query.trim()}
+            className="bg-indigo-600 hover:bg-indigo-700 text-white p-3 rounded-xl transition-all active:scale-95 shadow-md disabled:opacity-50 disabled:cursor-not-allowed"
           >
             <span className="material-symbols-outlined">arrow_forward</span>
           </button>
