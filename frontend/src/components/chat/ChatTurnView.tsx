@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import { submitFeedback } from '../../lib/api';
 import type { ChatTurn } from '../../lib/chatStore';
 import type { Source } from '../../lib/types';
+import { useDocumentPaths } from '../../lib/useDocumentPaths';
 import MarkdownAnswer from './MarkdownAnswer';
 
 interface Props {
@@ -18,6 +19,7 @@ function fileName(s: Source) {
 
 function SourceList({ turnId, sources, highlight }: { turnId: string; sources: Source[]; highlight: number | null }) {
   const [open, setOpen] = useState<number | null>(null);
+  const existing = useDocumentPaths(sources.length > 0);
   if (!sources.length) return null;
   return (
     <div className="mt-5">
@@ -31,11 +33,13 @@ function SourceList({ turnId, sources, highlight }: { turnId: string; sources: S
         {sources.map((s, i) => {
           const n = i + 1;
           const expanded = open === n || highlight === n;
+          const deleted = existing !== null && !existing.has(s.source_path);
           return (
             <li
               key={i}
               id={`${turnId}-src-${n}`}
-              className={`rounded-xl border px-3 py-2 transition-colors ${
+              data-deleted={deleted || undefined}
+              className={`rounded-xl border px-3 py-2 transition-colors ${deleted ? 'opacity-60' : ''} ${
                 highlight === n
                   ? 'border-indigo-400/60 bg-indigo-500/10'
                   : 'border-white/5 bg-slate-900/60 hover:border-indigo-500/30'
@@ -53,6 +57,11 @@ function SourceList({ turnId, sources, highlight }: { turnId: string; sources: S
                     {s.document_title || fileName(s)}
                   </span>
                   <span className="block text-[10px] text-slate-500 truncate">
+                    {deleted ? (
+                      <span className="text-amber-300/90" title="This document was removed from the knowledge base">
+                        Document deleted ·{' '}
+                      </span>
+                    ) : null}
                     {fileName(s)}
                     {s.page_numbers?.length ? ` · p. ${s.page_numbers.join(', ')}` : ''}
                   </span>
