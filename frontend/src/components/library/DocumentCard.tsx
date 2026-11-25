@@ -13,6 +13,13 @@ function getDocIcon(path: string): string {
   return 'draft';
 }
 
+/** Older uploads were titled after their random temp file ("tmpmuz366ta"); show the file name instead. */
+function displayTitle(title: string | null | undefined, sourcePath: string) {
+  const file = sourcePath.split('/').pop() || sourcePath;
+  if (!title || /^tmp[a-z0-9_]{5,}$/i.test(title)) return file.replace(/\.[^.]+$/, '') || file;
+  return title;
+}
+
 export default function DocumentCard({ document: doc }: Props) {
   const isProcessing = doc.chunk_count === 0;
 
@@ -39,7 +46,7 @@ export default function DocumentCard({ document: doc }: Props) {
       </div>
 
       <h3 className="font-headline font-bold text-lg mb-1 group-hover:text-primary transition-colors">
-        {doc.title || doc.source_path.split('/').pop()}
+        {displayTitle(doc.title, doc.source_path)}
       </h3>
       <p className="text-xs font-medium text-outline mb-6 flex items-center gap-1">
         <span className="material-symbols-outlined text-[14px]">
