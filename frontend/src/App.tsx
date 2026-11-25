@@ -4,6 +4,7 @@ import AppShell from './components/layout/AppShell';
 import Home from './pages/Home';
 import Results from './pages/Results';
 import Library from './pages/Library';
+import NotFound from './pages/NotFound';
 
 export default function App() {
   const location = useLocation();
@@ -14,6 +15,7 @@ export default function App() {
           <Route path="/" element={<Home />} />
           <Route path="/results" element={<Results />} />
           <Route path="/library" element={<Library />} />
+          <Route path="*" element={<NotFound />} />
         </Routes>
       </AnimatePresence>
     </AppShell>
