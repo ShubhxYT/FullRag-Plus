@@ -77,6 +77,8 @@ def _run_ingestion(job_id: str, tmp_path: str, original_name: str) -> None:
             repo = DocumentRepository()
             repo.insert_document(session, doc)
             session.flush()
+            # Known from here on, so DELETE can refuse it until ingestion ends.
+            _set_job(job_id, document_id=doc.id)
 
             # Stage 3 — Embed chunks
             update("embedding", 80)
@@ -100,13 +102,26 @@ def _run_ingestion(job_id: str, tmp_path: str, original_name: str) -> None:
         # Clean up temp file
         file_path.unlink(missing_ok=True)
 
+        # Cached "no documents" answers are stale now.
+        from api.routes.query import invalidate_response_cache
+
+        invalidate_response_cache()
         update("complete", 100)
-        _set_job(job_id, document_id=doc.id)
 
     except Exception as exc:
         logger.exception("Upload job %s failed: %s", job_id, exc)
         _set_job(job_id, stage="error", progress=0, error=str(exc))
         file_path.unlink(missing_ok=True)
+
+
+def processing_document_ids() -> set[str]:
+    """IDs of documents whose ingestion job has not finished yet."""
+    with _jobs_lock:
+        return {
+            j["document_id"]
+            for j in _jobs.values()
+            if j.get("document_id") and j["stage"] not in ("complete", "error")
+        }
 
 
 @router.post(

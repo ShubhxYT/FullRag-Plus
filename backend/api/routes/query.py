@@ -30,6 +30,12 @@ def _get_pipeline() -> RAGPipeline:
     return _pipeline
 
 
+def invalidate_response_cache() -> None:
+    """Clear cached answers so none can cite a document that changed or is gone."""
+    if _pipeline is not None:
+        _pipeline.invalidate_cache()
+
+
 def _history(request: QueryRequest) -> dict:
     """kwargs for prior turns (omitted when empty to keep the call minimal)."""
     if not request.history:

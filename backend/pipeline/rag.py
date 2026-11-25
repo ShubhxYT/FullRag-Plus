@@ -94,6 +94,11 @@ class RAGPipeline:
         else:
             self._response_cache = None
 
+    def invalidate_cache(self) -> None:
+        """Drop cached answers (e.g. after documents were added or deleted)."""
+        if self._response_cache is not None:
+            self._response_cache.invalidate_all()
+
     # How many prior turns are sent to the LLM, and how much of each.
     MAX_HISTORY_TURNS = 6
     MAX_HISTORY_CHARS = 2000

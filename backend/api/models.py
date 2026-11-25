@@ -76,6 +76,20 @@ class DocumentsResponse(BaseModel):
     total: int
 
 
+class DeleteDocumentsRequest(BaseModel):
+    """POST /documents/delete request body."""
+
+    ids: list[str] = Field(..., min_length=1, max_length=100)
+
+
+class DeleteDocumentsResponse(BaseModel):
+    """Result of deleting one or more documents."""
+
+    deleted: list[str]
+    not_found: list[str] = []
+    chunks_deleted: int = 0
+
+
 class ErrorResponse(BaseModel):
     """Structured error response."""
 
