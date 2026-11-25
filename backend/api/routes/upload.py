@@ -22,6 +22,20 @@ router = APIRouter()
 _jobs: dict[str, dict] = {}
 _jobs_lock = threading.Lock()
 
+# One ingestion at a time: parsing/embedding is CPU-heavy, and loading the
+# embedding model from two threads at once fails ("Cannot copy out of meta
+# tensor"). The service (and its loaded model) is reused across uploads.
+_ingest_lock = threading.Lock()
+_embedding_service: EmbeddingService | None = None
+
+
+def _get_embedding_service() -> EmbeddingService:
+    global _embedding_service
+    if _embedding_service is None:
+        _embedding_service = EmbeddingService(config=EmbeddingConfig())
+    return _embedding_service
+
+
 # Accepted file extensions
 ACCEPTED_EXTENSIONS = {".pdf", ".docx", ".html", ".htm", ".md"}
 # 50 MB upload limit
@@ -46,6 +60,12 @@ def _set_job(job_id: str, **kwargs) -> None:
 
 
 def _run_ingestion(job_id: str, tmp_path: str, original_name: str) -> None:
+    """Run one upload's ingestion, waiting for any other upload to finish first."""
+    with _ingest_lock:
+        _run_ingestion_locked(job_id, tmp_path, original_name)
+
+
+def _run_ingestion_locked(job_id: str, tmp_path: str, original_name: str) -> None:
     """Full ingestion pipeline executed in a background thread."""
 
     def update(stage: str, progress: int) -> None:
@@ -86,9 +106,7 @@ def _run_ingestion(job_id: str, tmp_path: str, original_name: str) -> None:
             chunk_ids = [c.id for c in doc.chunks if c.text.strip()]
 
             if chunk_texts:
-                config = EmbeddingConfig()
-                emb_service = EmbeddingService(config=config)
-                result = emb_service.embed(chunk_texts)
+                result = _get_embedding_service().embed(chunk_texts)
 
                 # Stage 4 — Store embeddings
                 update("indexing", 95)
