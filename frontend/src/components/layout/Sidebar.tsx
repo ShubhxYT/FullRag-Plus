@@ -1,7 +1,27 @@
 import { NavLink, useNavigate } from 'react-router-dom';
+import { useHealth, healthDotClass } from '../../lib/useHealth';
+
+// Placeholders from the design that have no backend yet: rendered disabled
+// (with a "Soon" tag) instead of as buttons that silently do nothing.
+function SoonItem({ icon, label, compact }: { icon: string; label: string; compact?: boolean }) {
+  return (
+    <div
+      aria-disabled="true"
+      title="Coming soon"
+      className={`w-full flex items-center gap-3 font-headline text-sm font-medium text-slate-600 cursor-not-allowed select-none px-4 ${compact ? 'py-2' : 'py-3'} rounded-xl`}
+    >
+      <span className="material-symbols-outlined">{icon}</span>
+      <span className="flex-1">{label}</span>
+      <span className="text-[9px] uppercase tracking-widest text-slate-600 border border-slate-700/60 rounded-full px-1.5 py-0.5">
+        Soon
+      </span>
+    </div>
+  );
+}
 
 export default function Sidebar() {
   const navigate = useNavigate();
+  const health = useHealth();
 
   const linkClass = ({ isActive }: { isActive: boolean }) =>
     `flex items-center gap-3 font-headline text-sm font-medium px-4 py-3 rounded-xl transition-all duration-300 ${
@@ -57,32 +77,24 @@ export default function Sidebar() {
           </span>
           Library
         </NavLink>
-        <button className="w-full flex items-center gap-3 font-headline text-sm font-medium text-slate-400 hover:text-indigo-300 hover:bg-slate-800/50 px-4 py-3 rounded-xl transition-all duration-300">
-          <span className="material-symbols-outlined">folder_shared</span>
-          Collections
-        </button>
-        <button className="w-full flex items-center gap-3 font-headline text-sm font-medium text-slate-400 hover:text-indigo-300 hover:bg-slate-800/50 px-4 py-3 rounded-xl transition-all duration-300">
-          <span className="material-symbols-outlined">history</span>
-          History
-        </button>
+        <SoonItem icon="folder_shared" label="Collections" />
+        <SoonItem icon="history" label="History" />
       </nav>
 
       {/* Bottom Section */}
       <div className="mt-auto space-y-4 pt-6 border-t border-slate-800/50">
         <div className="space-y-1">
-          <button className="w-full flex items-center gap-3 px-4 py-2 rounded-xl text-slate-500 hover:text-indigo-300 hover:bg-slate-800/50 transition-all duration-300">
-            <span className="material-symbols-outlined">settings</span>
-            <span className="font-headline text-sm">Settings</span>
-          </button>
-          <button className="w-full flex items-center gap-3 px-4 py-2 rounded-xl text-slate-500 hover:text-indigo-300 hover:bg-slate-800/50 transition-all duration-300">
-            <span className="material-symbols-outlined">help</span>
-            <span className="font-headline text-sm">Support</span>
-          </button>
+          <SoonItem icon="settings" label="Settings" compact />
+          <SoonItem icon="help" label="Support" compact />
         </div>
-        <div className="flex items-center gap-2 px-4 py-2 opacity-50">
-          <div className="w-2 h-2 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.6)] animate-pulse" />
+        <div
+          className="flex items-center gap-2 px-4 py-2 opacity-70"
+          role="status"
+          title={health.data ? `API: ${health.data.status}, database: ${health.data.database}` : undefined}
+        >
+          <div className={`w-2 h-2 rounded-full ${healthDotClass[health.state]} ${health.state === 'ok' ? 'animate-pulse' : ''}`} />
           <span className="text-[10px] font-label font-medium uppercase tracking-tighter">
-            System Healthy
+            {health.label}
           </span>
         </div>
       </div>

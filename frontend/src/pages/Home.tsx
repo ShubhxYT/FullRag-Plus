@@ -1,6 +1,7 @@
 import { motion } from 'framer-motion';
 import { useQuery } from '@tanstack/react-query';
-import { fetchHealth, fetchDocuments } from '../lib/api';
+import { fetchDocuments } from '../lib/api';
+import { useHealth } from '../lib/useHealth';
 import SearchInput from '../components/search/SearchInput';
 import SuggestionChips from '../components/search/SuggestionChips';
 
@@ -11,11 +12,7 @@ const pageVariants = {
 };
 
 export default function Home() {
-  const { data: health } = useQuery({
-    queryKey: ['health'],
-    queryFn: fetchHealth,
-    retry: false,
-  });
+  const { data: health, state: healthState, label: healthLabel } = useHealth();
   const { data: docs } = useQuery({
     queryKey: ['documents'],
     queryFn: fetchDocuments,
@@ -62,15 +59,33 @@ export default function Home() {
           <span className="w-1 h-1 bg-slate-700 rounded-full" />
           <span>
             Database:{' '}
-            {health?.database === 'connected' ? 'Connected' : '—'}
+            {health?.database === 'connected'
+              ? 'Connected'
+              : health?.database
+                ? health.database
+                : healthState === 'down'
+                  ? 'Unreachable'
+                  : '—'}
           </span>
         </div>
-        <div className="inline-flex items-center gap-2 px-4 py-2 bg-emerald-950/30 text-emerald-400 rounded-full text-xs font-bold border border-emerald-900/50 backdrop-blur-sm">
+        <div
+          role="status"
+          className={`inline-flex items-center gap-2 px-4 py-2 rounded-full text-xs font-bold border backdrop-blur-sm ${
+            {
+              ok: 'bg-emerald-950/30 text-emerald-400 border-emerald-900/50',
+              loading: 'bg-slate-900/40 text-slate-400 border-slate-800',
+              degraded: 'bg-amber-950/30 text-amber-400 border-amber-900/50',
+              down: 'bg-red-950/30 text-red-400 border-red-900/50',
+            }[healthState]
+          }`}
+        >
           <span className="flex h-2 w-2 relative">
-            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
-            <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500" />
+            {healthState === 'ok' && (
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
+            )}
+            <span className="relative inline-flex rounded-full h-2 w-2 bg-current" />
           </span>
-          {health?.status === 'ok' ? 'System Healthy' : 'Connecting...'}
+          {healthLabel}
         </div>
       </footer>
 

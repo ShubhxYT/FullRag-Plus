@@ -1,10 +1,11 @@
 import { NavLink } from 'react-router-dom';
 
+// 'search_spark' isn't in the Material Symbols font, so it rendered as raw
+// text. The old '#history' / '#health' tabs were hash links that resolve to
+// the *current* page, so both showed as active everywhere and did nothing.
 const tabs = [
-  { to: '/', icon: 'search_spark', label: 'Query', end: true },
+  { to: '/', icon: 'search', label: 'Query', end: true },
   { to: '/library', icon: 'library_books', label: 'Library', end: false },
-  { to: '#history', icon: 'history', label: 'History', end: false },
-  { to: '#health', icon: 'health_and_safety', label: 'Health', end: false },
 ];
 
 export default function MobileNav() {
@@ -13,6 +14,7 @@ export default function MobileNav() {
       {tabs.map((tab) => (
         <NavLink
           key={tab.label}
+          aria-label={tab.label}
           to={tab.to}
           end={tab.end}
           className={({ isActive }) =>
