@@ -8,7 +8,11 @@ import type { Source } from './types';
  * sources itself. Code spans/blocks are left untouched.
  */
 export function prepareAnswer(text: string, sources: Source[]): string {
-  let body = text.replace(/\n+\s*(?:#{1,6}\s*)?(?:\*\*)?Sources?:?(?:\*\*)?:?\s*\n(?:\s*(?:[-*•]|\d+\.)?\s*\[?Source[^\n]*\n?)+\s*$/i, '\n');
+  let body = text
+    // trailing "Sources:" list (older prompts) — the UI lists sources itself
+    .replace(/\n+\s*(?:#{1,6}\s*)?(?:\*\*)?Sources?:?(?:\*\*)?:?[ \t]*(?:\n(?:\s*(?:[-*•]|\d+\.)?\s*(?:\[|【)?(?:Source|None)[^\n]*)?)*\s*$/i, '')
+    // non-numeric bracket citations like 【Source: transcript】
+    .replace(/\s?【[^】\d]*】/g, '');
 
   const titleIndex = (label: string): number | null => {
     const l = label.trim().toLowerCase();

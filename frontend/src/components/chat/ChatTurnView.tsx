@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { Link } from 'react-router-dom';
 import { submitFeedback } from '../../lib/api';
 import type { ChatTurn } from '../../lib/useChat';
 import type { Source } from '../../lib/types';
@@ -183,6 +184,17 @@ export default function ChatTurnView({ turn, isLast, onRetry, onFeedback }: Prop
         )}
 
         <SourceList turnId={turn.id} sources={turn.sources} highlight={highlight} />
+
+        {turn.status === 'done' && turn.sources.length === 0 && (
+          <p className="mt-4 text-xs text-amber-300/80 flex items-center gap-1.5">
+            <span className="material-symbols-outlined text-sm">info</span>
+            No matching documents were found.
+            <Link to="/library" className="underline underline-offset-2 hover:text-amber-200">
+              Upload documents
+            </Link>
+            to get grounded answers.
+          </p>
+        )}
 
         {turn.status === 'done' && (
           <div className="mt-4 pt-3 border-t border-white/5 flex flex-wrap items-center gap-x-4 gap-y-2 text-[10px] text-slate-500 uppercase tracking-widest font-label">
