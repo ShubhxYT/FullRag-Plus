@@ -4,6 +4,10 @@ interface Props {
   onSubmit: (query: string) => void;
   /** The question currently shown, so suggestion chips can refer to it. */
   currentQuestion?: string;
+  /** An answer is being generated: show Stop instead of Send. */
+  busy?: boolean;
+  onStop?: () => void;
+  placeholder?: string;
 }
 
 // Chips used to send the bare label ("Explain in detail") as the question,
@@ -14,12 +18,12 @@ const followUpSuggestions: { label: string; build: (q: string) => string }[] = [
   { label: 'Compare approaches', build: (q) => `Compare the different approaches to: ${q}` },
 ];
 
-export default function FollowUpInput({ onSubmit, currentQuestion }: Props) {
+export default function FollowUpInput({ onSubmit, currentQuestion, busy, onStop, placeholder }: Props) {
   const [query, setQuery] = useState('');
 
   const handleSubmit = (e: FormEvent) => {
     e.preventDefault();
-    if (query.trim()) {
+    if (query.trim() && !busy) {
       onSubmit(query.trim());
       setQuery('');
     }
@@ -41,22 +45,35 @@ export default function FollowUpInput({ onSubmit, currentQuestion }: Props) {
             onChange={(e) => setQuery(e.target.value)}
             aria-label="Ask a follow-up question"
             className="flex-grow min-w-0 bg-transparent border-none text-white focus:ring-0 placeholder-slate-500 font-body text-base"
-            placeholder="Ask a follow-up question..."
+            placeholder={placeholder ?? 'Ask a follow-up question...'}
             type="text"
           />
           <div className="flex items-center gap-4 ml-2">
+            {busy ? (
+              <button
+                type="button"
+                onClick={onStop}
+                aria-label="Stop generating"
+                title="Stop"
+                className="h-11 w-11 bg-slate-700 hover:bg-slate-600 rounded-xl flex items-center justify-center text-white shadow-xl transition-all"
+              >
+                <span className="material-symbols-outlined" style={{ fontVariationSettings: "'FILL' 1" }}>stop</span>
+              </button>
+            ) : (
             <button
               type="submit"
+              disabled={!query.trim()}
               aria-label="Send follow-up"
-              className="h-11 w-11 primary-gradient rounded-xl flex items-center justify-center text-white shadow-xl shadow-indigo-900/40 hover:scale-105 active:scale-95 transition-all"
+              className="h-11 w-11 primary-gradient rounded-xl flex items-center justify-center text-white shadow-xl shadow-indigo-900/40 hover:scale-105 active:scale-95 transition-all disabled:opacity-40 disabled:hover:scale-100"
             >
               <span className="material-symbols-outlined">arrow_upward</span>
             </button>
+            )}
           </div>
         </form>
 
-        {currentQuestion && (
-        <div className="mt-3 md:mt-6 flex flex-wrap justify-center gap-2 md:gap-4">
+        {currentQuestion && !busy && (
+        <div className="mt-6 hidden md:flex flex-wrap justify-center gap-4">
           {followUpSuggestions.map((s) => (
             <button
               key={s.label}

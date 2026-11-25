@@ -1,80 +1,61 @@
-import { useSearchParams, useNavigate } from 'react-router-dom';
-import { useQuery, useMutation } from '@tanstack/react-query';
+import { useEffect, useLayoutEffect, useRef } from 'react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { motion } from 'framer-motion';
-import { submitQuery, submitFeedback, getErrorMessage } from '../lib/api';
-import SynthesisPanel from '../components/results/SynthesisPanel';
-import SourceCards from '../components/results/SourceCards';
-import FeedbackBar from '../components/results/FeedbackBar';
+import { useChat } from '../lib/useChat';
+import ChatTurnView from '../components/chat/ChatTurnView';
 import FollowUpInput from '../components/results/FollowUpInput';
 
 const pageVariants = {
   initial: { opacity: 0, y: 20 },
-  animate: { opacity: 1, y: 0, transition: { duration: 0.5, ease: 'easeOut' } },
-  exit: { opacity: 0, y: -20, transition: { duration: 0.3 } },
+  animate: { opacity: 1, y: 0, transition: { duration: 0.4, ease: 'easeOut' } },
+  exit: { opacity: 0, y: -20, transition: { duration: 0.2 } },
 };
 
-function ShimmerSkeleton() {
-  return (
-    <div className="space-y-8 animate-pulse">
-      <div className="flex items-center justify-between">
-        <div className="h-8 bg-slate-800 rounded-lg w-1/3" />
-        <div className="h-8 bg-emerald-950/30 rounded-full w-36" />
-      </div>
-      <div className="bg-slate-900/40 border border-white/5 p-8 rounded-2xl space-y-4">
-        <div className="h-4 bg-slate-800 rounded w-full" />
-        <div className="h-4 bg-slate-800 rounded w-5/6" />
-        <div className="h-4 bg-slate-800 rounded w-4/6" />
-        <div className="h-4 bg-slate-800 rounded w-full" />
-        <div className="h-4 bg-slate-800 rounded w-3/4" />
-      </div>
-      <div className="grid grid-cols-4 gap-3">
-        {[1, 2, 3, 4].map((i) => (
-          <div key={i} className="h-16 bg-slate-900/60 border border-white/5 rounded-xl" />
-        ))}
-      </div>
-    </div>
-  );
+function nearBottom(px = 240) {
+  return window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - px;
 }
 
+/**
+ * Chat view. `/results?q=...` starts a conversation with that question (or
+ * restores it after a reload); follow-ups continue it with history.
+ */
 export default function Results() {
   const [searchParams] = useSearchParams();
-  const question = searchParams.get('q') || '';
+  const question = (searchParams.get('q') || '').trim();
   const navigate = useNavigate();
+  const { turns, ask, retry, stop, reset, busy, setFeedback } = useChat();
 
-  const { data, isLoading, error, refetch, isFetching } = useQuery({
-    queryKey: ['query', question],
-    queryFn: () => submitQuery({ question, top_k: 5 }),
-    enabled: !!question,
-    // Each run is a paid LLM call: don't silently retry failures or re-run
-    // the same question when navigating back to it.
-    retry: false,
-    staleTime: Infinity,
-    gcTime: 30 * 60 * 1000,
-  });
+  const started = useRef<string | null>(null);
+  useEffect(() => {
+    if (!question || started.current === question) return;
+    started.current = question;
+    // Reload / back-navigation: the stored conversation already starts here.
+    if (turns.length && turns[0].question === question) return;
+    ask(question, { fresh: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [question]);
 
-  const feedbackMutation = useMutation({
-    mutationFn: submitFeedback,
-  });
+  // Scroll to a newly asked question; keep following a streaming answer
+  // only while the reader is already at the bottom.
+  const bottomRef = useRef<HTMLDivElement>(null);
+  const turnCount = useRef(turns.length);
+  const last = turns[turns.length - 1];
+  useLayoutEffect(() => {
+    const grew = turns.length > turnCount.current;
+    turnCount.current = turns.length;
+    if (grew || nearBottom()) bottomRef.current?.scrollIntoView({ behavior: grew ? 'smooth' : 'auto', block: 'end' });
+  }, [turns.length, last?.answer, last?.status, last?.sources.length]);
 
-  const handleFollowUp = (q: string) => {
-    navigate(`/results?q=${encodeURIComponent(q)}`);
+  const newConversation = (q?: string) => {
+    if (q) {
+      started.current = null;
+      reset();
+      navigate(`/results?q=${encodeURIComponent(q)}`);
+    } else {
+      reset();
+      navigate('/');
+    }
   };
-
-  const handleFeedback = (type: 'thumbs_up' | 'thumbs_down') => {
-    feedbackMutation.mutate({
-      query_log_id: data?.query_log_id ?? null,
-      feedback_type: type,
-      query_text: question,
-    });
-  };
-
-  const groundedPercent = data?.sources?.length
-    ? Math.round(
-        (data.sources.reduce((sum, s) => sum + s.similarity_score, 0) /
-          data.sources.length) *
-          100
-      )
-    : 0;
 
   return (
     <motion.div
@@ -88,92 +69,72 @@ export default function Results() {
       <div className="fixed inset-0 z-0 overflow-hidden pointer-events-none">
         <div className="absolute -top-[20%] -right-[10%] w-[60%] h-[60%] bg-indigo-900/10 rounded-full blur-[120px]" />
         <div className="absolute -bottom-[10%] -left-[5%] w-[40%] h-[40%] bg-blue-900/10 rounded-full blur-[100px]" />
-        <div className="absolute inset-0 bg-[url('https://www.transparenttextures.com/patterns/cubes.png')] opacity-[0.05]" />
       </div>
 
       {/* Header */}
-      <header className="flex justify-between items-center px-4 md:px-8 py-3 md:py-4 w-full sticky top-14 md:top-0 z-40 bg-slate-950/60 backdrop-blur-xl border-b border-white/5">
-        <div className="flex items-center flex-1 max-w-2xl">
-          <div className="relative w-full">
-            <span className="material-symbols-outlined absolute left-4 top-1/2 -translate-y-1/2 text-slate-500">
-              search
-            </span>
-            <input
-              key={question}
-              aria-label="Search your documents"
-              className="w-full bg-slate-900/50 border border-slate-800/50 rounded-xl py-2 pl-12 pr-4 text-sm text-on-surface focus:ring-1 focus:ring-indigo-500 focus:bg-slate-900 transition-all placeholder-slate-500"
-              placeholder="Ask anything about your documents..."
-              type="text"
-              defaultValue={question}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') {
-                  const value = (e.target as HTMLInputElement).value.trim();
-                  if (value) handleFollowUp(value);
-                }
-              }}
-            />
-          </div>
-        </div>
-        <div className="hidden md:flex items-center gap-6 ml-6">
-          <div className="text-xl font-bold bg-gradient-to-br from-indigo-400 to-indigo-600 bg-clip-text text-transparent font-headline tracking-tight">
-            Cerebro Flux
-          </div>
-          <div className="flex items-center gap-4">
-            <button className="material-symbols-outlined text-slate-500 hover:text-white transition-colors p-2 rounded-full hover:bg-slate-800/50">
-              settings
-            </button>
-            <button className="material-symbols-outlined text-slate-500 hover:text-white transition-colors p-2 rounded-full hover:bg-slate-800/50">
-              help
-            </button>
-            <div className="h-9 w-9 rounded-full bg-slate-800 overflow-hidden ring-2 ring-indigo-500/20 shadow-lg" />
-          </div>
-        </div>
+      <header className="flex items-center gap-3 px-4 md:px-8 py-3 md:py-4 w-full sticky top-14 md:top-0 z-40 bg-slate-950/70 backdrop-blur-xl border-b border-white/5">
+        <form
+          className="relative flex-1 max-w-2xl"
+          onSubmit={(e) => {
+            e.preventDefault();
+            const input = e.currentTarget.elements.namedItem('q') as HTMLInputElement;
+            const value = input.value.trim();
+            if (value) {
+              newConversation(value);
+              input.value = '';
+            }
+          }}
+        >
+          <span className="material-symbols-outlined absolute left-4 top-1/2 -translate-y-1/2 text-slate-500">search</span>
+          <input
+            name="q"
+            aria-label="Start a new search"
+            className="w-full bg-slate-900/50 border border-slate-800/50 rounded-xl py-2 pl-12 pr-4 text-sm text-on-surface focus:ring-1 focus:ring-indigo-500 focus:bg-slate-900 transition-all placeholder-slate-500"
+            placeholder="New search…"
+            type="text"
+          />
+        </form>
+        <button
+          onClick={() => newConversation()}
+          className="shrink-0 flex items-center gap-1.5 px-3 md:px-4 py-2 rounded-xl text-xs font-bold font-headline text-slate-300 bg-slate-800/60 hover:bg-slate-700/60 border border-white/5"
+          title="Start a new conversation"
+        >
+          <span className="material-symbols-outlined text-base">add_comment</span>
+          <span className="hidden sm:inline">New chat</span>
+        </button>
       </header>
 
-      {/* Main Content */}
-      <main className="max-w-4xl mx-auto w-full px-4 md:px-8 py-8 md:py-12 flex-grow relative z-10">
-        {!question ? (
+      {/* Conversation */}
+      <main className="max-w-4xl mx-auto w-full px-4 md:px-8 py-6 md:py-10 flex-grow relative z-10">
+        {turns.length === 0 ? (
           <div className="text-center py-16 text-slate-400">
-            <p className="font-headline font-bold text-lg mb-2 text-slate-200">
-              No question yet
-            </p>
-            <p className="text-sm">Type a question above to search your documents.</p>
+            <span className="material-symbols-outlined text-4xl text-indigo-400 mb-3 block">forum</span>
+            <p className="font-headline font-bold text-lg mb-2 text-slate-200">Ask your documents anything</p>
+            <p className="text-sm">Type a question below to start a conversation.</p>
           </div>
-        ) : isLoading ? (
-          <ShimmerSkeleton />
-        ) : error ? (
-          <div
-            role="alert"
-            className="bg-red-950/30 border border-red-500/20 rounded-2xl p-6 md:p-8 text-red-300"
-          >
-            <p className="font-headline font-bold mb-2">Query Failed</p>
-            <p className="text-sm text-red-400 break-words">{getErrorMessage(error)}</p>
-            <button
-              onClick={() => refetch()}
-              disabled={isFetching}
-              className="mt-4 px-4 py-2 rounded-full text-xs font-bold uppercase tracking-widest bg-red-900/40 hover:bg-red-900/60 text-red-200 disabled:opacity-50 transition-colors"
-            >
-              {isFetching ? 'Retrying…' : 'Try again'}
-            </button>
+        ) : (
+          <div className="space-y-8 md:space-y-10">
+            {turns.map((t, i) => (
+              <ChatTurnView
+                key={t.id}
+                turn={t}
+                isLast={i === turns.length - 1}
+                onRetry={retry}
+                onFeedback={setFeedback}
+              />
+            ))}
           </div>
-        ) : data ? (
-          <>
-            <SynthesisPanel
-              answer={data.answer}
-              groundedPercent={groundedPercent}
-              latency={data.latency}
-            />
-            <SourceCards sources={data.sources} />
-            <FeedbackBar
-              onFeedback={handleFeedback}
-              submitted={feedbackMutation.isSuccess}
-            />
-          </>
-        ) : null}
+        )}
+        <div ref={bottomRef} className="h-2" />
       </main>
 
-      {/* Follow-up Footer */}
-      <FollowUpInput onSubmit={handleFollowUp} currentQuestion={question} />
+      <FollowUpInput
+        onSubmit={(q) => ask(q)}
+        currentQuestion={last?.status === 'done' ? last.question : undefined}
+        busy={busy}
+        onStop={stop}
+        placeholder={turns.length ? 'Ask a follow-up question…' : 'Ask a question…'}
+      />
     </motion.div>
   );
 }
