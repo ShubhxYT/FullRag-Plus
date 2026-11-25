@@ -1,4 +1,6 @@
-import { NavLink, useNavigate } from 'react-router-dom';
+import { NavLink, useLocation, useNavigate } from 'react-router-dom';
+import { clearActive } from '../../lib/chatStore';
+import { useChatState } from '../../lib/useChatStore';
 import { useHealth, healthDotClass } from '../../lib/useHealth';
 
 // Placeholders from the design that have no backend yet: rendered disabled
@@ -22,6 +24,10 @@ function SoonItem({ icon, label, compact }: { icon: string; label: string; compa
 export default function Sidebar() {
   const navigate = useNavigate();
   const health = useHealth();
+  const { pathname } = useLocation();
+  const { conversations, activeId } = useChatState();
+  const recent = conversations.filter((c) => c.turns.length > 0).slice(0, 5);
+  const onChat = pathname === '/' || pathname.startsWith('/chat/');
 
   const linkClass = ({ isActive }: { isActive: boolean }) =>
     `flex items-center gap-3 font-headline text-sm font-medium px-4 py-3 rounded-xl transition-all duration-300 ${
@@ -56,7 +62,10 @@ export default function Sidebar() {
 
       {/* New Research CTA */}
       <button
-        onClick={() => navigate('/')}
+        onClick={() => {
+          clearActive();
+          navigate('/');
+        }}
         className="w-full py-3 mb-6 primary-gradient text-white rounded-xl font-headline font-bold text-sm tracking-wide shadow-md hover:scale-[0.98] transition-transform"
       >
         New Research
@@ -64,7 +73,7 @@ export default function Sidebar() {
 
       {/* Navigation */}
       <nav className="flex-1 space-y-1">
-        <NavLink to="/" end className={linkClass}>
+        <NavLink to="/" end className={() => linkClass({ isActive: onChat })}>
           <span className="material-symbols-outlined">explore</span>
           Discover
         </NavLink>
@@ -78,7 +87,28 @@ export default function Sidebar() {
           Library
         </NavLink>
         <SoonItem icon="folder_shared" label="Collections" />
-        <SoonItem icon="history" label="History" />
+        <NavLink to="/history" className={linkClass}>
+          <span className="material-symbols-outlined">history</span>
+          History
+        </NavLink>
+        {recent.length > 0 && (
+          <div className="pl-11 pr-2 space-y-0.5" aria-label="Recent conversations">
+            {recent.map((c) => (
+              <NavLink
+                key={c.id}
+                to={`/chat/${c.id}`}
+                title={c.title}
+                className={({ isActive }) =>
+                  `block truncate text-xs py-1 transition-colors ${
+                    isActive || (c.id === activeId && pathname === '/') ? 'text-indigo-300' : 'text-slate-500 hover:text-slate-300'
+                  }`
+                }
+              >
+                {c.title}
+              </NavLink>
+            ))}
+          </div>
+        )}
       </nav>
 
       {/* Bottom Section */}
