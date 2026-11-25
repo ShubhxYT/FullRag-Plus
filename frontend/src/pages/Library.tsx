@@ -49,7 +49,7 @@ export default function Library() {
             className="flex items-center justify-center gap-2 px-8 py-4 primary-gradient text-white rounded-full font-headline font-bold text-sm tracking-widest shadow-xl hover:scale-[0.98] transition-transform w-full md:w-auto"
           >
             <span className="material-symbols-outlined">upload_file</span>
-            UPLOAD DOCUMENT
+            UPLOAD DOCUMENTS
           </button>
         </header>
 
