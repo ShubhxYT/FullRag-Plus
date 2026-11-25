@@ -1,6 +1,7 @@
 """RAG pipeline orchestrator — wires retrieval, context, prompts, and generation."""
 
 import asyncio
+import re
 import time
 from pathlib import Path
 from typing import AsyncIterator
@@ -28,6 +29,14 @@ from retrieval.models import RetrievalResult
 from retrieval.service import RetrievalService
 
 logger = get_logger(__name__)
+
+
+_CITATION_RE = re.compile(r"【\s*(?:Source\s*)?(\d+)[^】]*】")
+
+
+def normalize_citations(text: str) -> str:
+    """gpt-oss models like to cite as 【1†L2-L3】; rewrite those to [1]."""
+    return _CITATION_RE.sub(lambda m: f"[{m.group(1)}]", text)
 
 
 def _snippet(text: str | None, limit: int = 280) -> str:
@@ -220,7 +229,7 @@ class RAGPipeline:
         )
 
         response = RAGResponse(
-            answer=gen_response.text,
+            answer=normalize_citations(gen_response.text),
             sources=sources,
             latency=latency,
             token_usage=gen_response.token_usage,
@@ -299,7 +308,7 @@ class RAGPipeline:
         latency.generation_ms = round((time.perf_counter() - generation_start) * 1000, 2)
         latency.total_ms = round((time.perf_counter() - total_start) * 1000, 2)
         response = RAGResponse(
-            answer=final.text,
+            answer=normalize_citations(final.text),
             sources=sources,
             latency=latency,
             token_usage=final.token_usage,
