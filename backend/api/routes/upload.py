@@ -62,8 +62,9 @@ def _run_ingestion(job_id: str, tmp_path: str, original_name: str) -> None:
         if doc is None:
             raise ValueError(f"Unsupported or failed to process: {original_name}")
 
-        # Allow original filename as title if not set by loader
-        if doc.title is None:
+        # Use the original filename as title when the loader found none or
+        # fell back to the random temp-file name (e.g. "tmpmuz366ta" for PDFs).
+        if not doc.title or doc.title == file_path.stem:
             doc.title = Path(original_name).stem
         # Store the user's file name, not the random temp path (/tmp/tmpXXXX.md)
         # that the loader saw; it is what the UI shows as the source.
