@@ -1,0 +1,8 @@
+node_modules
+dist
+*.tsbuildinfo
+stitch
+.github
+.env
+.env.*
+npm-debug.log*
