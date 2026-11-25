@@ -1,7 +1,7 @@
 import { useSearchParams, useNavigate } from 'react-router-dom';
 import { useQuery, useMutation } from '@tanstack/react-query';
 import { motion } from 'framer-motion';
-import { submitQuery, submitFeedback } from '../lib/api';
+import { submitQuery, submitFeedback, getErrorMessage } from '../lib/api';
 import SynthesisPanel from '../components/results/SynthesisPanel';
 import SourceCards from '../components/results/SourceCards';
 import FeedbackBar from '../components/results/FeedbackBar';
@@ -41,10 +41,15 @@ export default function Results() {
   const question = searchParams.get('q') || '';
   const navigate = useNavigate();
 
-  const { data, isLoading, error } = useQuery({
+  const { data, isLoading, error, refetch, isFetching } = useQuery({
     queryKey: ['query', question],
     queryFn: () => submitQuery({ question, top_k: 5 }),
     enabled: !!question,
+    // Each run is a paid LLM call: don't silently retry failures or re-run
+    // the same question when navigating back to it.
+    retry: false,
+    staleTime: Infinity,
+    gcTime: 30 * 60 * 1000,
   });
 
   const feedbackMutation = useMutation({
@@ -87,15 +92,17 @@ export default function Results() {
       </div>
 
       {/* Header */}
-      <header className="flex justify-between items-center px-8 py-4 w-full sticky top-0 z-50 bg-slate-950/60 backdrop-blur-xl border-b border-white/5">
+      <header className="flex justify-between items-center px-4 md:px-8 py-3 md:py-4 w-full sticky top-14 md:top-0 z-40 bg-slate-950/60 backdrop-blur-xl border-b border-white/5">
         <div className="flex items-center flex-1 max-w-2xl">
           <div className="relative w-full">
             <span className="material-symbols-outlined absolute left-4 top-1/2 -translate-y-1/2 text-slate-500">
               search
             </span>
             <input
+              key={question}
+              aria-label="Search your documents"
               className="w-full bg-slate-900/50 border border-slate-800/50 rounded-xl py-2 pl-12 pr-4 text-sm text-on-surface focus:ring-1 focus:ring-indigo-500 focus:bg-slate-900 transition-all placeholder-slate-500"
-              placeholder={question}
+              placeholder="Ask anything about your documents..."
               type="text"
               defaultValue={question}
               onKeyDown={(e) => {
@@ -107,7 +114,7 @@ export default function Results() {
             />
           </div>
         </div>
-        <div className="flex items-center gap-6 ml-6">
+        <div className="hidden md:flex items-center gap-6 ml-6">
           <div className="text-xl font-bold bg-gradient-to-br from-indigo-400 to-indigo-600 bg-clip-text text-transparent font-headline tracking-tight">
             Cerebro Flux
           </div>
@@ -124,16 +131,30 @@ export default function Results() {
       </header>
 
       {/* Main Content */}
-      <main className="max-w-4xl mx-auto w-full px-8 py-12 flex-grow relative z-10">
-        {isLoading ? (
+      <main className="max-w-4xl mx-auto w-full px-4 md:px-8 py-8 md:py-12 flex-grow relative z-10">
+        {!question ? (
+          <div className="text-center py-16 text-slate-400">
+            <p className="font-headline font-bold text-lg mb-2 text-slate-200">
+              No question yet
+            </p>
+            <p className="text-sm">Type a question above to search your documents.</p>
+          </div>
+        ) : isLoading ? (
           <ShimmerSkeleton />
         ) : error ? (
-          <div className="bg-red-950/30 border border-red-500/20 rounded-2xl p-8 text-red-300">
+          <div
+            role="alert"
+            className="bg-red-950/30 border border-red-500/20 rounded-2xl p-6 md:p-8 text-red-300"
+          >
             <p className="font-headline font-bold mb-2">Query Failed</p>
-            <p className="text-sm text-red-400">
-              Unable to reach the backend. Make sure the FullRag server is
-              running on port 8001.
-            </p>
+            <p className="text-sm text-red-400 break-words">{getErrorMessage(error)}</p>
+            <button
+              onClick={() => refetch()}
+              disabled={isFetching}
+              className="mt-4 px-4 py-2 rounded-full text-xs font-bold uppercase tracking-widest bg-red-900/40 hover:bg-red-900/60 text-red-200 disabled:opacity-50 transition-colors"
+            >
+              {isFetching ? 'Retrying…' : 'Try again'}
+            </button>
           </div>
         ) : data ? (
           <>
@@ -152,7 +173,7 @@ export default function Results() {
       </main>
 
       {/* Follow-up Footer */}
-      <FollowUpInput onSubmit={handleFollowUp} />
+      <FollowUpInput onSubmit={handleFollowUp} currentQuestion={question} />
     </motion.div>
   );
 }
