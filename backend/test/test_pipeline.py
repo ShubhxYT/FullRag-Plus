@@ -332,5 +332,5 @@ class TestTranscriptFallback:
         )
         response = asyncio.run(pipeline.query("What is RAG?"))
         # With no chunks, the fallback template still renders (empty context)
-        assert response.prompt_version == "transcript_fallback_v1"
+        assert response.prompt_version == "insufficient_v1"
         assert response.answer == "Transcript-based answer."

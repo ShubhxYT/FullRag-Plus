@@ -34,9 +34,14 @@ logger = get_logger(__name__)
 _CITATION_RE = re.compile(r"【\s*(?:Source\s*)?(\d+)[^】]*】")
 
 
+_OTHER_BRACKET_RE = re.compile(r"\s?【[^】\d]*】")
+
+
 def normalize_citations(text: str) -> str:
-    """gpt-oss models like to cite as 【1†L2-L3】; rewrite those to [1]."""
-    return _CITATION_RE.sub(lambda m: f"[{m.group(1)}]", text)
+    """gpt-oss models like to cite as 【1†L2-L3】; rewrite those to [1] and
+    drop non-numeric ones such as 【Source: transcript】."""
+    text = _CITATION_RE.sub(lambda m: f"[{m.group(1)}]", text)
+    return _OTHER_BRACKET_RE.sub("", text)
 
 
 def _snippet(text: str | None, limit: int = 280) -> str:
@@ -151,8 +156,13 @@ class RAGPipeline:
                 "RAG pipeline: insufficient context — activating transcript fallback",
                 extra={"component": "pipeline", "transcript_path": self._transcript_path},
             )
-            fitted_chunks = self._load_transcript_as_chunks()
-            variant = PromptVariant.TRANSCRIPT_FALLBACK
+            transcript_chunks = self._load_transcript_as_chunks()
+            if transcript_chunks:
+                fitted_chunks = transcript_chunks
+                variant = PromptVariant.TRANSCRIPT_FALLBACK
+            # else: no transcript file -> keep INSUFFICIENT so the model says
+            # the documents don't cover it instead of talking about a
+            # "transcript" the user never provided.
 
         rendered = self._prompt_registry.render(variant, question, fitted_chunks)
         logger.info(
