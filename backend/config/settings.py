@@ -80,12 +80,15 @@ def get_generation_max_tokens() -> int:
 def get_generation_provider() -> str:
     """Return the generation provider name from environment.
 
-    Supported: 'gemini', 'groq'. If GENERATION_PROVIDER is unset, uses 'groq'
-    when only a Groq key is configured, otherwise 'gemini'.
+    Supported: 'opencode', 'groq', 'gemini'. If GENERATION_PROVIDER is unset,
+    uses 'opencode' when OPENCODE_API_KEY is set, 'groq' when only a Groq key
+    is configured, otherwise 'gemini'.
     """
     explicit = os.environ.get("GENERATION_PROVIDER", "").strip().lower()
     if explicit:
         return explicit
+    if os.environ.get("OPENCODE_API_KEY"):
+        return "opencode"
     if os.environ.get("GROQ_API_KEY") and not os.environ.get("GEMINI_API_KEY"):
         return "groq"
     return "gemini"
@@ -249,3 +252,134 @@ def get_transcript_path() -> str:
     Defaults to 'data/transcript.md'. Override with TRANSCRIPT_PATH env var.
     """
     return os.environ.get("TRANSCRIPT_PATH", "data/transcript.md")
+
+
+# ---------------------------------------------------------------------------
+# OpenCode Go (OpenAI-compatible). Model list:
+#   curl https://opencode.ai/inference/go/v1/models
+# ---------------------------------------------------------------------------
+
+DEFAULT_OPENCODE_BASE_URL = "https://opencode.ai/inference/go/openai/v1"
+DEFAULT_OPENCODE_MODEL = "deepseek-v4.1-flash"
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return default
+    return raw.strip().lower() in ("true", "1", "yes", "on")
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.environ.get(name, "").strip()
+    try:
+        return int(raw) if raw else default
+    except ValueError:
+        return default
+
+
+def get_opencode_api_key() -> str:
+    key = os.environ.get("OPENCODE_API_KEY", "")
+    if not key:
+        raise RuntimeError("OPENCODE_API_KEY not set.")
+    return key
+
+
+def get_opencode_base_url() -> str:
+    return os.environ.get("OPENCODE_BASE_URL", "").strip() or DEFAULT_OPENCODE_BASE_URL
+
+
+def get_opencode_model() -> str:
+    return os.environ.get("OPENCODE_MODEL", "").strip() or DEFAULT_OPENCODE_MODEL
+
+
+def get_opencode_fallback_models() -> list[str]:
+    raw = os.environ.get("OPENCODE_FALLBACK_MODELS", "")
+    return [m.strip() for m in raw.split(",") if m.strip()]
+
+
+def get_opencode_reasoning_effort() -> str:
+    """deepseek-v4.1-flash accepts low|high|max. Empty disables the parameter."""
+    return os.environ.get("OPENCODE_REASONING_EFFORT", "low").strip().lower()
+
+
+def get_groq_fallback_enabled() -> bool:
+    """With provider 'opencode', also try the Groq chain when OpenCode fails."""
+    return _env_bool("GROQ_FALLBACK_ENABLED", True) and bool(os.environ.get("GROQ_API_KEY"))
+
+
+# ---------------------------------------------------------------------------
+# Context budgets (tokens). Defaults follow the provider: the OpenCode model
+# has a ~1M window, Groq's free tier allows ~8k tokens/minute.
+# ---------------------------------------------------------------------------
+
+def _large_context_provider() -> bool:
+    return get_generation_provider() in ("opencode", "gemini")
+
+
+def get_max_context_tokens() -> int:
+    return _env_int("MAX_CONTEXT_TOKENS", 128000 if _large_context_provider() else 6000)
+
+
+def get_overview_context_tokens() -> int:
+    """Budget for corpus-wide / overview prompts (outlines + summaries)."""
+    return _env_int("OVERVIEW_CONTEXT_TOKENS", 200000 if _large_context_provider() else 4500)
+
+
+def get_default_max_output_tokens() -> int:
+    return _env_int("GENERATION_MAX_TOKENS", 8192 if _large_context_provider() else 2048)
+
+
+def get_small_library_docs() -> int:
+    """Libraries with at most this many documents get every document outlined
+    for an overview question even when it does not say 'all'."""
+    return _env_int("SMALL_LIBRARY_DOCS", 40)
+
+
+def get_map_reduce_doc_tokens() -> int:
+    """Most document text sent to one map call in map-reduce summaries."""
+    return _env_int("MAP_REDUCE_DOC_TOKENS", 30000)
+
+
+def get_map_reduce_concurrency() -> int:
+    return max(1, _env_int("MAP_REDUCE_CONCURRENCY", 8))
+
+
+# ---------------------------------------------------------------------------
+# Retrieval quality knobs
+# ---------------------------------------------------------------------------
+
+def get_reranker_name() -> str:
+    """'cross-encoder' (local, free), 'llm' (uses the generation model) or 'none'."""
+    return os.environ.get("RERANKER", "cross-encoder").strip().lower()
+
+
+def get_reranker_model() -> str:
+    return os.environ.get("RERANKER_MODEL", "").strip() or "cross-encoder/ms-marco-MiniLM-L-6-v2"
+
+
+def get_retrieval_candidates() -> int:
+    """Candidates fetched from pgvector before reranking / MMR."""
+    return _env_int("RETRIEVAL_CANDIDATES", 40)
+
+
+def get_mmr_lambda() -> float:
+    try:
+        return float(os.environ.get("MMR_LAMBDA", "0.7"))
+    except ValueError:
+        return 0.7
+
+
+def get_query_rewrite_enabled() -> bool:
+    return _env_bool("QUERY_REWRITE_ENABLED", True)
+
+
+def get_document_summaries_enabled() -> bool:
+    """Write a per-document summary at ingest (one LLM call per upload)."""
+    return _env_bool("DOCUMENT_SUMMARIES_ENABLED", True)
+
+
+def get_summary_backfill_on_startup() -> bool:
+    """Fill missing document summaries in the background at startup.
+    Only writes documents.summary; never touches chunks or embeddings."""
+    return _env_bool("SUMMARY_BACKFILL_ON_STARTUP", True)

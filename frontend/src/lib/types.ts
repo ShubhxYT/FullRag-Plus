@@ -9,6 +9,8 @@ export interface QueryRequest {
   prompt_variant?: 'qa' | 'summarize' | null;
   /** Earlier turns, oldest first (ignored by backends that predate it). */
   history?: ChatMessage[];
+  /** Only answer from these documents (source picker); omitted = all. */
+  document_ids?: string[];
 }
 
 export interface Source {
@@ -43,12 +45,14 @@ export interface QueryResponse {
   query_log_id: string | null;
   /** Model that produced the answer (newer backends only). */
   model?: string | null;
+  coverage?: Coverage | null;
 }
 
 /** One NDJSON event from POST /query/stream. */
 export type StreamEvent =
-  | { type: 'sources'; sources: Source[]; prompt_version: string }
+  | { type: 'sources'; sources: Source[]; prompt_version: string; coverage?: Coverage | null }
   | { type: 'delta'; text: string }
+  | { type: 'status'; text: string }
   | {
       type: 'done';
       answer: string;
@@ -57,8 +61,17 @@ export type StreamEvent =
       prompt_version: string;
       model: string | null;
       query_log_id: string | null;
+      coverage?: Coverage | null;
     }
   | { type: 'error'; detail: string };
+
+/** Overview answers: how many of the intended documents made it in. */
+export interface Coverage {
+  covered: number;
+  total: number;
+  missing: string[];
+  mode: 'overview' | 'map_reduce';
+}
 
 export interface DocumentItem {
   id: string;
@@ -66,6 +79,7 @@ export interface DocumentItem {
   source_path: string;
   chunk_count: number;
   created_at: string;
+  has_summary?: boolean;
 }
 
 export interface DocumentsResponse {
@@ -109,6 +123,7 @@ export type UploadStage =
   | 'saving'
   | 'embedding'
   | 'indexing'
+  | 'summarizing'
   | 'complete'
   | 'error';
 

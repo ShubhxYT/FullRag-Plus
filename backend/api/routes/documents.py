@@ -38,6 +38,7 @@ def list_documents() -> DocumentsResponse:
                 DocumentModel.title,
                 DocumentModel.source_path,
                 DocumentModel.created_at,
+                DocumentModel.summary.is_not(None).label("has_summary"),
                 func.count(ChunkModel.id).label("chunk_count"),
             )
             .outerjoin(ChunkModel, ChunkModel.document_id == DocumentModel.id)
@@ -53,6 +54,7 @@ def list_documents() -> DocumentsResponse:
                 source_path=row.source_path,
                 chunk_count=row.chunk_count,
                 created_at=row.created_at.isoformat(),
+                has_summary=bool(row.has_summary),
             )
             for row in rows
         ]

@@ -170,7 +170,8 @@ class DocumentRepository:
         top_k: int = 5,
         threshold: float | None = None,
         document_ids: list[str] | None = None,
-    ) -> list[tuple[ChunkModel, float]]:
+        with_vectors: bool = False,
+    ) -> list[tuple]:
         """Cosine similarity search over chunk embeddings.
 
         Uses pgvector's <=> (cosine distance) operator. Distance is
@@ -188,8 +189,11 @@ class DocumentRepository:
         distance = ChunkEmbeddingModel.embedding.cosine_distance(query_vector)
         similarity = (1 - distance).label("similarity")
 
+        cols = [ChunkModel, similarity]
+        if with_vectors:
+            cols.append(ChunkEmbeddingModel.embedding)
         stmt = (
-            select(ChunkModel, similarity)
+            select(*cols)
             .join(
                 ChunkEmbeddingModel,
                 ChunkEmbeddingModel.chunk_id == ChunkModel.id,
@@ -204,6 +208,8 @@ class DocumentRepository:
             stmt = stmt.where(ChunkModel.document_id.in_(document_ids))
 
         results = session.execute(stmt).all()
+        if with_vectors:
+            return [(row[0], float(row[1]), [float(x) for x in row[2]]) for row in results]
         return [(row[0], float(row[1])) for row in results]
 
     def list_document_names(self, session: Session) -> list[tuple[str, str, str | None]]:
@@ -212,6 +218,46 @@ class DocumentRepository:
             select(DocumentModel.id, DocumentModel.source_path, DocumentModel.title)
         ).all()
         return [(str(r.id), r.source_path, r.title) for r in rows]
+
+    def get_document_summaries(
+        self, session: Session, document_ids: list[str] | None = None
+    ) -> dict[str, str]:
+        """{document_id: summary} for documents that have one."""
+        stmt = select(DocumentModel.id, DocumentModel.summary).where(DocumentModel.summary.is_not(None))
+        if document_ids:
+            stmt = stmt.where(DocumentModel.id.in_(document_ids))
+        return {str(r.id): r.summary for r in session.execute(stmt).all() if (r.summary or "").strip()}
+
+    def documents_missing_summary(self, session: Session) -> list[str]:
+        """IDs of documents without a summary, oldest first."""
+        stmt = (
+            select(DocumentModel.id)
+            .where((DocumentModel.summary.is_(None)) | (DocumentModel.summary == ""))
+            .order_by(DocumentModel.created_at)
+        )
+        return [str(r.id) for r in session.execute(stmt).all()]
+
+    def set_document_summary(
+        self, session: Session, document_id: str, summary: str, model: str | None
+    ) -> bool:
+        """Write only the summary columns of one document (no other column changes)."""
+        from datetime import datetime, timezone
+
+        from sqlalchemy import update
+
+        res = session.execute(
+            update(DocumentModel)
+            .where(DocumentModel.id == document_id)
+            .values(
+                summary=summary,
+                summary_model=model,
+                summary_updated_at=datetime.now(timezone.utc),
+                # keep updated_at as is: a summary is metadata, not a content change
+                updated_at=DocumentModel.updated_at,
+            )
+            .execution_options(synchronize_session=False)
+        )
+        return (res.rowcount or 0) > 0
 
     def get_chunks_for_documents(
         self, session: Session, document_ids: list[str]

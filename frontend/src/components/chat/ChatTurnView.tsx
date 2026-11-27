@@ -118,7 +118,8 @@ export default function ChatTurnView({ turn, isLast, onRetry, onFeedback }: Prop
   };
 
   const streaming = turn.status === 'streaming';
-  const avgScore = turn.sources.length
+  // Overview answers cite whole documents (no similarity score): no "% match".
+  const avgScore = turn.sources.length && turn.sources.some((s) => s.similarity_score > 0)
     ? Math.round((turn.sources.reduce((a, s) => a + s.similarity_score, 0) / turn.sources.length) * 100)
     : null;
 
@@ -143,12 +144,29 @@ export default function ChatTurnView({ turn, isLast, onRetry, onFeedback }: Prop
           {turn.status === 'searching' && (
             <span className="text-xs text-slate-500 flex items-center gap-1" role="status">
               <span className="material-symbols-outlined text-sm animate-spin">progress_activity</span>
-              Searching your documents…
+              {turn.progress || 'Searching your documents…'}
             </span>
           )}
           {streaming && !turn.answer && (
             <span className="text-xs text-slate-500" role="status">
               Found {turn.sources.length} source{turn.sources.length === 1 ? '' : 's'}, writing answer…
+            </span>
+          )}
+          {turn.documentIds?.length ? (
+            <span className="text-[10px] font-bold uppercase tracking-widest text-indigo-300/90 bg-indigo-950/40 border border-indigo-500/20 rounded-full px-2 py-0.5" title="Limited with the source picker">
+              {turn.documentIds.length} selected source{turn.documentIds.length === 1 ? '' : 's'}
+            </span>
+          ) : null}
+          {turn.coverage && turn.status === 'done' && (
+            <span
+              className={`text-[10px] font-bold uppercase tracking-widest rounded-full px-2 py-0.5 border ${
+                turn.coverage.covered < turn.coverage.total
+                  ? 'text-amber-300 bg-amber-950/30 border-amber-500/20'
+                  : 'text-emerald-400/90 bg-emerald-950/30 border-emerald-500/20'
+              }`}
+              title={turn.coverage.missing.length ? `Not included: ${turn.coverage.missing.join(', ')}` : 'Every document was included'}
+            >
+              {turn.coverage.covered}/{turn.coverage.total} documents
             </span>
           )}
           {avgScore !== null && turn.status === 'done' && (

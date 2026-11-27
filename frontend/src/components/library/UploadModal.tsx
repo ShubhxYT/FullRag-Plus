@@ -24,6 +24,7 @@ const STAGE_LABELS: Record<UploadStage, string> = {
   saving: 'Saving…',
   embedding: 'Embedding…',
   indexing: 'Indexing…',
+  summarizing: 'Summarizing…',
   complete: 'Indexed',
   error: 'Failed',
 };

@@ -100,16 +100,17 @@ class TestPipelineRouting:
         results, routed = asyncio.run(p._route_and_retrieve("list all the topics i should cover in my modules", [], 5))
         assert routed
         assert [x.document_id for x in results] == ["m3", "m4", "m5", "m6"]
-        assert set(r.retrieve.call_args.kwargs["document_ids"]) == {"m3", "m4", "m5", "m6"}
+        # named documents are outlined directly, no similarity search needed
+        assert not r.retrieve.called
 
     def test_named_document_filters_search(self):
         p, r = self._pipeline([_result("m5", 0.6, "Module5_IntroToCV.pdf")])
         results, routed = asyncio.run(p._route_and_retrieve("how does module 5 define computer vision", [], 5))
-        assert routed and r.retrieve.call_args.kwargs["document_ids"] == ["m5"]
+        assert routed and r.retrieve.call_args_list[0].kwargs["document_ids"] == ["m5"]
         assert results[0].document_id == "m5"
 
     def test_plain_question_caps_per_document(self):
         p, r = self._pipeline([_result("m3", 0.8, "Module3_FeatureExtraction.pdf")])
         _, routed = asyncio.run(p._route_and_retrieve("what is the sobel operator", [], 5))
         assert not routed
-        assert r.retrieve.call_args.kwargs == {"top_k": 5, "max_per_document": 3}
+        assert r.retrieve.call_args.kwargs == {"top_k": 5, "max_per_document": 3, "candidates": 40}

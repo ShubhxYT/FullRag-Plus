@@ -13,7 +13,8 @@ import {
   streamQuery,
   submitQuery,
 } from './api';
-import type { ChatMessage, LatencyBreakdown, Source } from './types';
+import type { ChatMessage, Coverage, LatencyBreakdown, Source } from './types';
+import { getSelectedSources } from './sourceSelection';
 
 export type TurnStatus = 'searching' | 'streaming' | 'done' | 'error' | 'stopped';
 
@@ -29,6 +30,11 @@ export interface ChatTurn {
   queryLogId?: string | null;
   feedback?: 'thumbs_up' | 'thumbs_down';
   createdAt?: number;
+  /** Live progress from the server ("Read 5 of 23 documents…"). */
+  progress?: string;
+  /** Documents the question was limited to (source picker); absent = all. */
+  documentIds?: string[];
+  coverage?: Coverage | null;
 }
 
 export interface Conversation {
@@ -281,7 +287,14 @@ async function run(convId: string, turnId: string, question: string, prior: Chat
   const controller = new AbortController();
   controllers.set(convId, controller);
   listeners.forEach((l) => l());
-  const request = { question, top_k: 5, history: historyFor(prior) };
+  const picked = getSelectedSources();
+  const request = {
+    question,
+    top_k: 5,
+    history: historyFor(prior),
+    ...(picked.length ? { document_ids: picked } : {}),
+  };
+  patchTurn(convId, turnId, { documentIds: picked.length ? picked : undefined });
 
   try {
     if (streamingSupported) {
@@ -289,7 +302,9 @@ async function run(convId: string, turnId: string, question: string, prior: Chat
         await streamQuery(
           request,
           (event) => {
-            if (event.type === 'sources') patchTurn(convId, turnId, { sources: event.sources, status: 'streaming' });
+            if (event.type === 'status') patchTurn(convId, turnId, { progress: event.text });
+            else if (event.type === 'sources')
+              patchTurn(convId, turnId, { sources: event.sources, coverage: event.coverage ?? null, status: 'streaming', progress: undefined });
             else if (event.type === 'delta')
               patchTurn(convId, turnId, (t) => ({ answer: t.answer + event.text, status: 'streaming' }));
             else if (event.type === 'done')
@@ -301,6 +316,7 @@ async function run(convId: string, turnId: string, question: string, prior: Chat
                   latency: event.latency,
                   model: event.model,
                   queryLogId: event.query_log_id,
+                  coverage: event.coverage ?? null,
                   status: 'done',
                 },
                 true,
@@ -335,6 +351,7 @@ async function run(convId: string, turnId: string, question: string, prior: Chat
         latency: data.latency,
         model: data.model ?? null,
         queryLogId: data.query_log_id,
+        coverage: data.coverage ?? null,
         status: 'done',
       },
       true,

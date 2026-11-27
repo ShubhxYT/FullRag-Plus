@@ -61,3 +61,7 @@ class RAGResponse(BaseModel):
     model: str | None = Field(
         default=None, description="LLM model that produced the answer."
     )
+    coverage: dict | None = Field(
+        default=None,
+        description="Overview answers: {covered, total, missing, mode} documents.",
+    )

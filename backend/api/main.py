@@ -61,6 +61,30 @@ def _start_reembed_thread() -> None:
     threading.Thread(target=run, name="reembed", daemon=True).start()
 
 
+def _start_summary_backfill_thread() -> None:
+    """Write summaries for documents that have none (e.g. uploaded before
+    summaries existed). Only touches documents.summary*."""
+    import threading
+
+    from config.settings import get_document_summaries_enabled, get_summary_backfill_on_startup
+
+    if not (get_document_summaries_enabled() and get_summary_backfill_on_startup()):
+        return
+
+    def run() -> None:
+        try:
+            from ingestion.summaries import backfill_missing
+
+            if backfill_missing():
+                from api.routes.query import invalidate_response_cache
+
+                invalidate_response_cache()
+        except Exception as exc:  # never block startup
+            logger.warning("Summary backfill skipped: %s", exc)
+
+    threading.Thread(target=run, name="summary-backfill", daemon=True).start()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global _scheduler
@@ -70,6 +94,7 @@ async def lifespan(app: FastAPI):
         _scheduler = BackgroundEvaluationScheduler()
         _scheduler.start(get_eval_schedule_interval_hours())
     _start_reembed_thread()
+    _start_summary_backfill_thread()
     yield
     if _scheduler:
         _scheduler.stop()
