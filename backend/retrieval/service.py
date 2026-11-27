@@ -49,8 +49,13 @@ class RetrievalService:
         threshold: float | None = None,
         document_ids: list[str] | None = None,
         max_per_document: int | None = None,
+        candidates: int | None = None,
     ) -> RetrievalResponse:
         """Retrieve the most relevant chunks for a query.
+
+        With ``candidates`` (> top_k) a wider pool is fetched, reranked with
+        the configured reranker (RERANKER) and narrowed to top_k with MMR
+        (MMR_LAMBDA) under the per-document quota ``max_per_document``.
 
         Embeds the query, searches the vector database for similar chunks,
         and returns ranked results with metadata.
@@ -75,9 +80,15 @@ class RetrievalService:
         )
 
         # 2. Search the vector database (blocking I/O — offload to thread)
-        results = await asyncio.to_thread(
-            self._search_sync, query_vector, top_k, threshold, document_ids, max_per_document
-        )
+        if candidates and candidates > top_k:
+            results = await asyncio.to_thread(
+                self._search_rerank_sync, query, query_vector, top_k, candidates,
+                threshold, document_ids, max_per_document,
+            )
+        else:
+            results = await asyncio.to_thread(
+                self._search_sync, query_vector, top_k, threshold, document_ids, max_per_document
+            )
 
         elapsed_ms = (time.perf_counter() - start) * 1000
 
@@ -175,6 +186,71 @@ class RetrievalService:
             results = capped
         return results[:top_k]
 
+    def _search_rerank_sync(
+        self,
+        query: str,
+        query_vector: list[float],
+        top_k: int,
+        candidates: int,
+        threshold: float | None,
+        document_ids: list[str] | None,
+        max_per_document: int | None,
+    ) -> list[RetrievalResult]:
+        """Wide vector search -> rerank -> MMR with a per-document quota."""
+        from config.settings import get_mmr_lambda
+        from retrieval.doc_routing import display_name
+        from retrieval.reranker import mmr_select, rerank_scores
+
+        session = get_session()
+        try:
+            kwargs = {"top_k": candidates, "threshold": threshold, "with_vectors": True}
+            if document_ids:
+                kwargs["document_ids"] = document_ids
+            raw = self._repo.search_by_vector(session, query_vector, **kwargs)
+            results = [self._map_result(chunk, score, "vector") for chunk, score, _ in raw]
+            vectors = [v for _, _, v in raw]
+        finally:
+            session.close()
+        if not results:
+            return []
+        scores = rerank_scores(
+            query, [f"{display_name(r.source_path)}\n{r.text}" for r in results]
+        )
+        if scores is not None:
+            for r, sc in zip(results, scores):
+                r.rerank_score = round(float(sc), 4)
+            relevance = scores
+        else:
+            relevance = [r.similarity_score for r in results]
+        idx = mmr_select(
+            relevance, vectors, top_k, get_mmr_lambda(),
+            doc_ids=[r.document_id for r in results], max_per_document=max_per_document,
+        )
+        # present in relevance order (highest first) for the context budget
+        idx.sort(key=lambda i: relevance[i], reverse=True)
+        return [results[i] for i in idx]
+
+    def document_summaries(self, document_ids: list[str] | None = None) -> dict[str, str]:
+        session = get_session()
+        try:
+            return self._repo.get_document_summaries(session, document_ids)
+        finally:
+            session.close()
+
+    def document_texts(self, document_ids: list[str], max_tokens: int) -> dict[str, str]:
+        """{doc_id: reading-order text cut to max_tokens} (for map-reduce)."""
+        from ingestion.summaries import document_text
+
+        session = get_session()
+        try:
+            chunks = self._repo.get_chunks_for_documents(session, document_ids)
+            by_doc: dict[str, list[ChunkModel]] = {}
+            for c in chunks:
+                by_doc.setdefault(str(c.document_id), []).append(c)
+            return {d: document_text(cs, max_tokens=max_tokens) for d, cs in by_doc.items()}
+        finally:
+            session.close()
+
     def document_catalog(self) -> list[tuple[str, str, str | None]]:
         """(id, source_path, title) of every document."""
         session = get_session()
@@ -187,14 +263,20 @@ class RetrievalService:
         self,
         document_ids: list[str],
         scores: dict[str, float] | None = None,
-        max_headings: int = 40,
+        max_headings: int | None = None,
+        include_summary: bool = True,
+        include_outline: bool = True,
     ) -> list[RetrievalResult]:
-        """One pseudo-chunk per document listing its headings in order."""
+        """One pseudo-chunk per document: its stored summary and every
+        (non-generic) heading in reading order. ``max_headings=None`` keeps
+        all headings; the caller's token budget decides what fits."""
+        from generation.context_manager import ContextManager
         from retrieval.doc_routing import display_name, outline_from_chunks
 
         session = get_session()
         try:
             chunks = self._repo.get_chunks_for_documents(session, document_ids)
+            summaries = self._repo.get_document_summaries(session, document_ids) if include_summary else {}
             by_doc: dict[str, list[ChunkModel]] = {}
             for c in chunks:
                 by_doc.setdefault(str(c.document_id), []).append(c)
@@ -204,17 +286,23 @@ class RetrievalService:
                 if not doc_chunks:
                     continue
                 doc = doc_chunks[0].document
-                headings = outline_from_chunks((c.text for c in doc_chunks), max_items=max_headings)
-                if headings:
-                    body = "\n".join(f"- {h}" for h in headings)
-                else:  # no headings: fall back to the opening text
-                    body = doc_chunks[0].text[:1200]
                 name = display_name(doc.source_path)
+                parts: list[str] = [f"Document: \"{name}\" (file {doc.source_path})"]
+                summary = summaries.get(doc_id)
+                if summary:
+                    parts.append(f"Summary:\n{summary.strip()}")
+                if include_outline:
+                    headings = outline_from_chunks((c.text for c in doc_chunks), max_items=max_headings)
+                    if headings:
+                        parts.append("Section headings in order:\n" + "\n".join(f"- {h}" for h in headings))
+                if len(parts) == 1:  # no summary and no headings: opening text
+                    parts.append(doc_chunks[0].text[:1200])
+                text = "\n\n".join(parts)
                 out.append(
                     RetrievalResult(
                         chunk_id=f"outline:{doc_id}",
-                        text=f"Outline of the document \"{name}\" (its section headings in order):\n{body}",
-                        summary="",
+                        text=text,
+                        summary=(summary or "")[:300],
                         keywords=[],
                         section_path=[],
                         page_numbers=[],
@@ -223,7 +311,7 @@ class RetrievalService:
                         source_path=doc.source_path,
                         similarity_score=round((scores or {}).get(doc_id, 0.0), 4),
                         match_type="outline",
-                        token_count=0,
+                        token_count=ContextManager.count_tokens(text),
                     )
                 )
             return out

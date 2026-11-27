@@ -27,6 +27,9 @@ class RetrievalResult(BaseModel):
         description="How this result was found: 'vector', 'keyword', or 'hybrid'.",
     )
     token_count: int = Field(default=0, description="Token count of the chunk.")
+    rerank_score: float | None = Field(
+        default=None, description="Reranker score (ordering only; scale depends on the reranker)."
+    )
 
 
 class RetrievalResponse(BaseModel):

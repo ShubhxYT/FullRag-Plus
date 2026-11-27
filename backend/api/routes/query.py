@@ -37,10 +37,14 @@ def invalidate_response_cache() -> None:
 
 
 def _history(request: QueryRequest) -> dict:
-    """kwargs for prior turns (omitted when empty to keep the call minimal)."""
-    if not request.history:
-        return {}
-    return {"history": [t.model_dump() for t in request.history]}
+    """kwargs for prior turns and the source picker (omitted when empty to
+    keep the call minimal)."""
+    kwargs: dict = {}
+    if request.history:
+        kwargs["history"] = [t.model_dump() for t in request.history]
+    if request.document_ids:
+        kwargs["document_ids"] = list(dict.fromkeys(request.document_ids))
+    return kwargs
 
 
 def _friendly_error(e: Exception) -> str:
@@ -146,6 +150,7 @@ async def query_rag(request: QueryRequest) -> QueryResponse:
         prompt_version=rag_response.prompt_version,
         query_log_id=query_log_id,
         model=getattr(rag_response, "model", None),
+        coverage=getattr(rag_response, "coverage", None),
     )
 
 
@@ -187,6 +192,7 @@ async def query_rag_stream(request: QueryRequest) -> StreamingResponse:
                         "type": "sources",
                         "sources": [s.model_dump() for s in event["sources"]],
                         "prompt_version": event["prompt_version"],
+                        "coverage": event.get("coverage"),
                     })
                 elif kind == "delta":
                     yield line({"type": "delta", "text": event["text"]})
@@ -201,6 +207,7 @@ async def query_rag_stream(request: QueryRequest) -> StreamingResponse:
                         "prompt_version": rag_response.prompt_version,
                         "model": rag_response.model,
                         "query_log_id": query_log_id,
+                        "coverage": rag_response.coverage,
                     })
         except Exception as e:
             logger.error("RAG stream error: %s", e, exc_info=True)

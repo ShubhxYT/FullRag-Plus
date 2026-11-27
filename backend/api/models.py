@@ -38,6 +38,11 @@ class QueryRequest(BaseModel):
         max_length=20,
         description="Earlier turns of this conversation (oldest first).",
     )
+    document_ids: list[str] | None = Field(
+        default=None,
+        max_length=500,
+        description="Only answer from these documents (the UI source picker). None = all.",
+    )
 
 
 class QueryResponse(BaseModel):
@@ -50,6 +55,7 @@ class QueryResponse(BaseModel):
     prompt_version: str
     query_log_id: str | None = None
     model: str | None = None
+    coverage: dict | None = None
 
 
 class HealthResponse(BaseModel):
@@ -67,6 +73,7 @@ class DocumentInfo(BaseModel):
     source_path: str
     chunk_count: int
     created_at: str
+    has_summary: bool = False
 
 
 class DocumentsResponse(BaseModel):

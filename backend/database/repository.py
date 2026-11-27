@@ -170,7 +170,8 @@ class DocumentRepository:
         top_k: int = 5,
         threshold: float | None = None,
         document_ids: list[str] | None = None,
-    ) -> list[tuple[ChunkModel, float]]:
+        with_vectors: bool = False,
+    ) -> list[tuple]:
         """Cosine similarity search over chunk embeddings.
 
         Uses pgvector's <=> (cosine distance) operator. Distance is
@@ -188,8 +189,11 @@ class DocumentRepository:
         distance = ChunkEmbeddingModel.embedding.cosine_distance(query_vector)
         similarity = (1 - distance).label("similarity")
 
+        cols = [ChunkModel, similarity]
+        if with_vectors:
+            cols.append(ChunkEmbeddingModel.embedding)
         stmt = (
-            select(ChunkModel, similarity)
+            select(*cols)
             .join(
                 ChunkEmbeddingModel,
                 ChunkEmbeddingModel.chunk_id == ChunkModel.id,
@@ -204,6 +208,8 @@ class DocumentRepository:
             stmt = stmt.where(ChunkModel.document_id.in_(document_ids))
 
         results = session.execute(stmt).all()
+        if with_vectors:
+            return [(row[0], float(row[1]), [float(x) for x in row[2]]) for row in results]
         return [(row[0], float(row[1])) for row in results]
 
     def list_document_names(self, session: Session) -> list[tuple[str, str, str | None]]:

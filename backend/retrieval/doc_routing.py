@@ -112,12 +112,22 @@ def match_documents(query: str, documents: Iterable[tuple[str, str]]) -> list[st
         alpha = [p for p in parts if not p.isdigit()]
         if not alpha:
             continue
-        head = alpha[0]
-        head_idx = parts.index(head)
-        head_num = parts[head_idx + 1] if head_idx + 1 < len(parts) and parts[head_idx + 1].isdigit() else None
+        # Series words: the first word, plus any word followed by a number
+        # ("DAA_DSE3101-Module 5" -> daa, module(5)), so "modules" and
+        # "module 3" work wherever the series word sits in the file name.
+        series: dict[str, str | None] = {alpha[0]: None}
+        for i, p in enumerate(parts):
+            if not p.isdigit() and i + 1 < len(parts) and parts[i + 1].isdigit():
+                series[p] = parts[i + 1]
+        if alpha[0] in series and series[alpha[0]] is None:
+            i0 = parts.index(alpha[0])
+            if i0 + 1 < len(parts) and parts[i0 + 1].isdigit():
+                series[alpha[0]] = parts[i0 + 1]
 
         hit = False
-        if len(head) >= 4 and head not in _STOP and head in qset:
+        for head, head_num in series.items():
+            if len(head) < 4 or head in _STOP or head not in qset:
+                continue
             # numbers mentioned shortly after the series word ("module 3 and 4")
             nums: set[str] = set()
             for i, t in enumerate(q):
@@ -131,6 +141,8 @@ def match_documents(query: str, documents: Iterable[tuple[str, str]]) -> list[st
                 hit = True
             elif head_num is not None and (head_num.lstrip("0") or "0") in nums:
                 hit = True
+            if hit:
+                break
 
         if not hit:
             words = [p for p in parts if len(p) >= 3 and not p.isdigit() and p not in _STOP]
@@ -157,14 +169,63 @@ _OVERVIEW = re.compile(
 
 def is_overview(query: str) -> bool:
     """Questions about what documents cover, rather than a specific fact."""
-    return bool(_OVERVIEW.search(query or ""))
+    return bool(_OVERVIEW.search(query or "")) or is_corpus_wide(query)
+
+
+_CORPUS = re.compile(
+    r"\b(all|every|each|entire|whole)\s+(of\s+)?(the\s+|my\s+|these\s+|those\s+)?"
+    r"(sources?|documents?|docs|files?|pdfs?|materials?|notes|uploads?|slides|library|knowledge\s*base)\b"
+    r"|\beverything\b|\bacross\s+(all\s+)?(the\s+|my\s+)?(sources?|documents?|files?)\b"
+    r"|\b(sources?|documents?|files?)\s+one\s+by\s+one\b",
+    re.I,
+)
+
+_SUMMARIZE = re.compile(r"\b(summari[sz]e|summary|summaries|overview|gist|recap)\b", re.I)
+
+
+def is_corpus_wide(query: str) -> bool:
+    """Questions about every document ("go through all the sources ...")."""
+    return bool(_CORPUS.search(query or ""))
+
+
+def is_summarize_all(query: str) -> bool:
+    """'Summarize everything / all the documents' -> map-reduce over every document."""
+    q = query or ""
+    return bool(_SUMMARIZE.search(q)) and is_corpus_wide(q)
+
+
+def natural_key(source_path: str) -> list:
+    """Sort key so '2-x' < '10-x' and 'Module 2' < 'Module 10'."""
+    name = PurePath(source_path or "").name.lower()
+    return [int(t) if t.isdigit() else t for t in re.split(r"(\d+)", name)]
 
 
 _HEADING = re.compile(r"^\s{0,3}#{1,6}\s+(.+?)\s*#*\s*$", re.M)
 
 
-def outline_from_chunks(texts: Iterable[str], max_items: int = 40) -> list[str]:
-    """Distinct headings in reading order (code comments and noise skipped)."""
+# Slide/heading titles that say nothing about the topic.
+_GENERIC_HEADINGS = {
+    "algorithm", "algorithms", "code", "example", "examples", "solution", "solutions", "answer",
+    "answers", "definition", "definitions", "properties", "property", "note", "notes", "books",
+    "book", "references", "reference", "contents", "content", "output", "input", "step", "steps",
+    "analysis", "question", "questions", "practice", "summary", "key idea", "key ideas", "recap",
+    "agenda", "outline", "thank you", "thanks", "conclusion", "introduction", "intro", "total",
+    "cost", "recurrence", "pseudocode", "idea", "problem", "problems", "exercise", "exercises",
+    "where we are", "lecture roadmap", "roadmap", "key focus", "why it pays off", "you are here",
+    "other resources", "resources", "prerequisites", "objective", "objectives", "result", "results",
+    "proof", "case", "cases", "table", "figure", "diagram", "illustration", "explanation",
+}
+
+
+def outline_from_chunks(
+    texts: Iterable[str], max_items: int | None = None, skip_generic: bool = True
+) -> list[str]:
+    """Distinct headings in reading order (code comments and noise skipped).
+
+    ``max_items=None`` keeps every heading (the overview budget decides how
+    much is sent); generic slide titles ("Algorithm", "Code", "Example") are
+    dropped unless ``skip_generic`` is False.
+    """
     seen: set[str] = set()
     out: list[str] = []
     for text in texts:
@@ -172,11 +233,13 @@ def outline_from_chunks(texts: Iterable[str], max_items: int = 40) -> list[str]:
             h = re.sub(r"\s+", " ", m.group(1)).strip(" :·•-*").replace("&amp;", "&")
             if not h or h.startswith("#") or len(h) > 90 or not re.search(r"[A-Za-z]{3}", h):
                 continue
-            key = h.lower()
+            if skip_generic and re.sub(r"[^a-z ]+", "", h.lower()).strip() in _GENERIC_HEADINGS:
+                continue
+            key = re.sub(r"[^a-z0-9]+", " ", h.lower()).strip()
             if key in seen:
                 continue
             seen.add(key)
             out.append(h)
-            if len(out) >= max_items:
+            if max_items is not None and len(out) >= max_items:
                 return out
     return out
