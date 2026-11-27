@@ -196,6 +196,8 @@ async def query_rag_stream(request: QueryRequest) -> StreamingResponse:
                     })
                 elif kind == "delta":
                     yield line({"type": "delta", "text": event["text"]})
+                elif kind == "status":
+                    yield line({"type": "status", "text": event["text"]})
                 elif kind == "done":
                     rag_response = event["response"]
                     query_log_id = await asyncio.to_thread(_log_query, request, rag_response)

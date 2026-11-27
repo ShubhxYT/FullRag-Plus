@@ -338,11 +338,11 @@ def get_small_library_docs() -> int:
 
 def get_map_reduce_doc_tokens() -> int:
     """Most document text sent to one map call in map-reduce summaries."""
-    return _env_int("MAP_REDUCE_DOC_TOKENS", 60000)
+    return _env_int("MAP_REDUCE_DOC_TOKENS", 30000)
 
 
 def get_map_reduce_concurrency() -> int:
-    return max(1, _env_int("MAP_REDUCE_CONCURRENCY", 4))
+    return max(1, _env_int("MAP_REDUCE_CONCURRENCY", 8))
 
 
 # ---------------------------------------------------------------------------

@@ -1,6 +1,7 @@
 """RAG pipeline orchestrator — wires retrieval, context, prompts, and generation."""
 
 import asyncio
+import contextvars
 import re
 import time
 from pathlib import Path
@@ -100,6 +101,17 @@ You read ONE document and extract what is needed to answer a request that \
 spans many documents. Write compact Markdown notes: the document's main \
 topics/modules in order with their subtopics, and any facts the request \
 asks for. Use only the document text, keep its own names, no preamble."""
+
+
+# Per-request progress text shown as stream "status" events (keeps proxies
+# from timing out during long map-reduce runs).
+_progress: contextvars.ContextVar[dict | None] = contextvars.ContextVar("rag_progress", default=None)
+
+
+def _set_progress(text: str) -> None:
+    p = _progress.get()
+    if p is not None:
+        p["text"] = text
 
 
 def _coverage_notice(covered: int, total: int, missing: list[str]) -> str:
@@ -269,7 +281,9 @@ class RAGPipeline:
         except Exception:
             summaries = {}
         sem = asyncio.Semaphore(get_map_reduce_concurrency())
-        cfg = GenerationConfig(temperature=0.2, max_output_tokens=3000)
+        cfg = GenerationConfig(temperature=0.2, max_output_tokens=1500)
+        done = [0]
+        _set_progress(f"Reading {len(doc_ids)} documents…")
 
         async def one(doc_id: str) -> RetrievalResult | None:
             name = display_name(names.get(doc_id, doc_id))
@@ -287,6 +301,8 @@ class RAGPipeline:
                     notes = (resp.text or "").strip()
                 except Exception as exc:
                     logger.warning("Map step failed for %s: %s", name, exc)
+                done[0] += 1
+                _set_progress(f"Read {done[0]} of {len(doc_ids)} documents…")
             if not notes:
                 notes = (summaries.get(doc_id) or "").strip()
             if not notes:
@@ -624,9 +640,24 @@ class RAGPipeline:
 
         total_start = time.perf_counter()
         latency = LatencyBreakdown()
-        fitted_chunks, rendered, coverage = await self._prepare(
-            question, top_k, prompt_variant, history, latency, document_ids
-        )
+        progress = {"text": "Searching your documents…"}
+        token = _progress.set(progress)
+        try:
+            prep = asyncio.ensure_future(
+                self._prepare(question, top_k, prompt_variant, history, latency, document_ids)
+            )
+        finally:
+            _progress.reset(token)
+        try:
+            while True:
+                finished, _ = await asyncio.wait({prep}, timeout=8)
+                if finished:
+                    break
+                yield {"type": "status", "text": progress["text"]}
+        except BaseException:  # client went away: stop the map calls too
+            prep.cancel()
+            raise
+        fitted_chunks, rendered, coverage = prep.result()
         sources = self._build_citations(fitted_chunks)
         yield {"type": "sources", "sources": sources, "prompt_version": rendered.version, "coverage": coverage}
 
