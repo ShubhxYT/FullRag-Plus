@@ -15,7 +15,7 @@ export default function AppShell() {
   const { conversation } = useConversation(id);
   const { activeId } = useChatState();
   const theme = useSyncExternalStore(subscribeTheme, getTheme, getTheme);
-  const { collapsed, navOpen, panelOpen, closeDrawers, togglePanel, openNav, isMobile, setPeek } = useLayout();
+  const { collapsed, navOpen, panelOpen, closeDrawers, togglePanel, openNav, isNarrow, setPeek } = useLayout();
 
   const active = conversation ?? getConversation(id ?? activeId);
   const title =
@@ -77,11 +77,11 @@ export default function AppShell() {
           </button>
           <button
             type="button"
-            className={`icon-btn ${!collapsed || panelOpen ? 'active' : ''}`}
+            className={`icon-btn ${panelOpen || (!collapsed && !isNarrow()) ? 'active' : ''}`}
             onClick={togglePanel}
             aria-label="Toggle sources panel"
             title="Sources & library"
-            aria-pressed={!collapsed || panelOpen}
+            aria-pressed={panelOpen || (!collapsed && !isNarrow())}
           >
             <IconPanel className="icon-lg" />
           </button>
@@ -91,7 +91,7 @@ export default function AppShell() {
 
       <SidePanel />
       <div
-        className={`scrim ${(navOpen || (panelOpen && (isMobile() || window.matchMedia('(max-width: 1100px)').matches))) ? 'show' : ''}`}
+        className={`scrim ${navOpen || (panelOpen && isNarrow()) ? 'show' : ''}`}
         onClick={closeDrawers}
       />
     </div>

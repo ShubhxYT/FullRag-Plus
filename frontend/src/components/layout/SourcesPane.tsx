@@ -21,7 +21,7 @@ export function fileNameOf(path: string) {
 export function groupOf(doc: DocumentItem) {
   const n = `${doc.title ?? ''} ${doc.source_path}`.toLowerCase();
   if (/module\s*\d+/.test(n)) return 'Module decks';
-  if (/\blab\b/.test(n)) return 'Lab';
+  if (/\blab(?:\b|[_-])/.test(n)) return 'Lab';
   return 'Documents';
 }
 
