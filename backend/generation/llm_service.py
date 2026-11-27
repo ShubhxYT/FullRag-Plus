@@ -18,6 +18,11 @@ from config.settings import (
     get_groq_reasoning_effort,
     get_mistral_api_key,
     get_mistral_model,
+    get_opencode_api_key,
+    get_opencode_base_url,
+    get_opencode_fallback_models,
+    get_opencode_model,
+    get_opencode_reasoning_effort,
 )
 from generation.models import (
     ChunkEnrichment,
@@ -387,6 +392,16 @@ class GroqProvider:
             max_retries=0,
         )
 
+    # Subclasses route some models to another client (see OpenCodeProvider).
+    def _client_for(self, model: str):
+        return self._client
+
+    def _request_kwargs(self, model: str, system_prompt: str, user_prompt: str, history) -> dict:
+        extra = self._extra_body(model)
+        return {"extra_body": extra or None}
+
+    _label = "Groq"
+
     @property
     def models(self) -> list[str]:
         """Model chain tried in order."""
@@ -445,12 +460,12 @@ class GroqProvider:
         for model in self._models:
             for attempt in range(1, max_retries + 1):
                 try:
-                    response = self._client.chat.completions.create(
+                    response = self._client_for(model).chat.completions.create(
                         model=model,
                         messages=self._messages(system_prompt, user_prompt, history),
                         temperature=config.temperature,
                         max_tokens=config.max_output_tokens,
-                        extra_body=self._extra_body(model) or None,
+                        **self._request_kwargs(model, system_prompt, user_prompt, history),
                     )
 
                     choice = response.choices[0]
@@ -495,7 +510,7 @@ class GroqProvider:
                         errors.append(f"{model}: {e}")
 
         raise RuntimeError(
-            "Groq generation failed for all models ("
+            f"{self._label} generation failed for all models ("
             + ", ".join(self._models)
             + "). Last error: "
             + (errors[-1] if errors else "unknown")
@@ -517,14 +532,14 @@ class GroqProvider:
         for model in self._models:
             emitted = False
             try:
-                stream = self._client.chat.completions.create(
+                stream = self._client_for(model).chat.completions.create(
                     model=model,
                     messages=self._messages(system_prompt, user_prompt, history),
                     temperature=config.temperature,
                     max_tokens=config.max_output_tokens,
                     stream=True,
                     stream_options={"include_usage": True},
-                    extra_body=self._extra_body(model) or None,
+                    **self._request_kwargs(model, system_prompt, user_prompt, history),
                 )
                 parts: list[str] = []
                 usage = TokenUsage()
@@ -579,11 +594,83 @@ class GroqProvider:
                 logger.warning("Groq stream on %s failed before output: %s", model, e)
                 errors.append(f"{model}: {e}")
         raise RuntimeError(
-            "Groq generation failed for all models ("
+            f"{self._label} generation failed for all models ("
             + ", ".join(self._models)
             + "). Last error: "
             + (errors[-1] if errors else "unknown")
         )
+
+
+class OpenCodeProvider(GroqProvider):
+    """OpenCode Go (OpenAI-compatible) first, then the Groq chain as fallback.
+
+    OPENCODE_MODEL (default deepseek-v4.1-flash, ~1M context) and
+    OPENCODE_FALLBACK_MODELS are tried on OpenCode; when GROQ_API_KEY is set
+    and GROQ_FALLBACK_ENABLED is not false, GROQ_MODEL + GROQ_FALLBACK_MODELS
+    follow. Go asks clients to send their own User-Agent and a stable
+    x-opencode-session per conversation.
+    """
+
+    USER_AGENT = "fullrag-plus/1.0"
+    _label = "OpenCode"
+
+    def __init__(self, models: list[str] | None = None, groq_models: list[str] | None = None) -> None:
+        import openai
+
+        from config.settings import get_groq_fallback_enabled
+
+        self._openai = openai
+        oc_chain = models or [get_opencode_model(), *get_opencode_fallback_models()]
+        self._oc_models: list[str] = list(dict.fromkeys(m for m in oc_chain if m))
+        self._oc_client = openai.OpenAI(
+            api_key=get_opencode_api_key(),
+            base_url=get_opencode_base_url(),
+            timeout=180.0,
+            max_retries=0,
+            default_headers={"User-Agent": self.USER_AGENT},
+        )
+        self._groq_models: list[str] = []
+        self._client = None
+        if groq_models is not None or get_groq_fallback_enabled():
+            try:
+                self._client = openai.OpenAI(
+                    api_key=get_groq_api_key(),
+                    base_url=get_groq_base_url(),
+                    timeout=60.0,
+                    max_retries=0,
+                )
+                chain = groq_models if groq_models is not None else [get_groq_model(), *get_groq_fallback_models()]
+                self._groq_models = [m for m in dict.fromkeys(chain) if m and m not in self._oc_models]
+            except RuntimeError:  # no Groq key: OpenCode only
+                self._client = None
+        self._models = self._oc_models + self._groq_models
+        self._model_name = self._models[0]
+
+    def _client_for(self, model: str):
+        return self._oc_client if model in self._oc_models else self._client
+
+    @staticmethod
+    def _session_id(system_prompt: str, user_prompt: str, history) -> str:
+        import hashlib
+
+        first = ""
+        for t in history or []:
+            if t.get("role") == "user" and t.get("content"):
+                first = t["content"]
+                break
+        seed = first or user_prompt[-400:]
+        return "fullrag-" + hashlib.sha256(seed.encode("utf-8", "ignore")).hexdigest()[:24]
+
+    def _request_kwargs(self, model: str, system_prompt: str, user_prompt: str, history) -> dict:
+        if model not in self._oc_models:
+            return super()._request_kwargs(model, system_prompt, user_prompt, history)
+        kwargs: dict = {
+            "extra_headers": {"x-opencode-session": self._session_id(system_prompt, user_prompt, history)}
+        }
+        effort = get_opencode_reasoning_effort()
+        if effort and effort != "none":
+            kwargs["extra_body"] = {"reasoning_effort": effort}
+        return kwargs
 
 
 def get_generation_provider(provider_name: str = "gemini") -> GenerationProvider:
@@ -601,6 +688,7 @@ def get_generation_provider(provider_name: str = "gemini") -> GenerationProvider
     providers = {
         "gemini": GeminiGenerationProvider,
         "groq": GroqProvider,
+        "opencode": OpenCodeProvider,
     }
     if provider_name not in providers:
         raise ValueError(
