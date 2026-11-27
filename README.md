@@ -15,9 +15,19 @@ Upload PDF, DOCX, HTML or Markdown files in the Library, then ask questions in a
 
 ![FullRag Architecture](backend/fullrag-architecture.png)
 
-**Request flow:** User query → React UI → FastAPI `/query` → pgvector similarity search → LLM generation (Gemini or Groq) → answer with sources returned to UI.
+**Request flow:** User query → React UI → FastAPI `/query` → routing (search / named documents / overview / map-reduce) → pgvector search + local reranker + MMR → LLM generation (OpenCode Go `deepseek-v4.1-flash`, Groq as fallback, or Gemini) → answer with sources returned to UI.
 
-**Retrieval details:** chunks are embedded with `BAAI/bge-base-en-v1.5` together with their document name and section path, so questions that name a document ("my modules", "module 5") find it. Questions that name documents search only those; "list all the topics…" style questions get an outline built from the documents' headings; other questions use vector search with at most 3 chunks per document. When nothing scores above `INSUFFICIENT_THRESHOLD` the answer says the documents don't cover it.
+**Retrieval details:**
+
+- **Embeddings:** chunks are embedded with `BAAI/bge-base-en-v1.5` together with their document name and section path, so questions that name a document ("my modules", "module 5") find it.
+- **Ordinary questions:** 40 candidates from pgvector → local cross-encoder reranker (`cross-encoder/ms-marco-MiniLM-L-6-v2`, free, CPU) → MMR for diversity with at most 3 chunks per document → `top_k` chunks.
+- **Questions that name documents** ("module 3", "the huffman notes"): the series word can sit anywhere in the file name (`DAA_DSE3101-Module 3.pdf`). Those documents are searched first, then the answer is topped up from the others.
+- **Overview questions** ("list all modules with topics", "go through all the sources…"): when the question is corpus-wide, or the library has ≤ `SMALL_LIBRARY_DOCS` documents, **every** document is included, sorted by file name. Each one is represented by its stored summary plus every non-generic heading, within its own budget (`OVERVIEW_CONTEXT_TOKENS`). If not everything fits, the answer ends with **"Covered X of N documents"** and lists what was left out.
+- **Summarize everything** ("summarize all the documents"): map-reduce. One LLM call per document (in parallel, `MAP_REDUCE_CONCURRENCY`), then one combined answer. The stream sends `status` events ("Read 5 of 23 documents…") while it works.
+- **Follow-ups** ("and its complexity?") are rewritten by the LLM into a standalone search query.
+- **Source picker:** `document_ids` in the request (or the picker under the search box) limits every path to those documents.
+- **Per-document summaries** are written at upload (one LLM call). Documents that have none are filled in the background at startup, or by `python -m ingestion.summaries --missing`. This only writes `documents.summary`; chunks and embeddings are never touched.
+- When nothing scores above `INSUFFICIENT_THRESHOLD`, the answer says the documents don't cover it.
 
 ## Repository Structure
 
@@ -29,7 +39,7 @@ FullRag-Plus/
 │   ├── config/                 # Settings loaded from .env
 │   ├── database/               # SQLAlchemy models, repository, seed
 │   ├── embeddings/             # Embedding service (sentence-transformers)
-│   ├── generation/             # LLM generation pipeline (Gemini/Groq)
+│   ├── generation/             # LLM generation pipeline (OpenCode Go / Groq / Gemini)
 │   ├── ingestion/              # Document ingestion and chunking pipeline
 │   ├── pipeline/               # RAG orchestration (retrieval + generation)
 │   ├── retrieval/              # pgvector similarity search
@@ -156,7 +166,7 @@ Base URL (local dev): `http://localhost:8001` · live: `https://rag.shubhsomani.
 | `DELETE` | `/documents/{id}` | Delete a document with its chunks and embeddings (404 unknown, 409 still processing) |
 | `POST` | `/documents/delete` | Bulk delete: `{"ids": [...]}` → `deleted`, `not_found` |
 | `POST` | `/query` | Submit a RAG query — returns answer + sources (optional `history` for follow-ups) |
-| `POST` | `/query/stream` | Same, streamed as NDJSON: `sources` → `delta`… → `done` (or `error`) |
+| `POST` | `/query/stream` | Same, streamed as NDJSON: `status`… → `sources` → `delta`… → `done` (or `error`) |
 | `POST` | `/feedback` | Submit user feedback on a query result |
 | `GET` | `/evaluation/summary` | Get evaluation metrics summary |
 
@@ -165,18 +175,21 @@ Base URL (local dev): `http://localhost:8001` · live: `https://rag.shubhsomani.
 ```json
 // POST /query
 {
-  "question": "What is the main topic of the document?",
+  "question": "go through all the sources and list all modules with topics in them",
   "top_k": 5,
-  "prompt_variant": "default"
+  "history": [],              // earlier turns, oldest first (optional)
+  "document_ids": null        // limit to these documents (optional; null = all)
 }
 
 // Response
 {
-  "answer": "The document discusses...",
-  "sources": [{ "chunk_id": "...", "content": "...", "score": 0.92 }],
-  "latency": { "total_ms": 1240 },
-  "token_usage": { "input": 512, "output": 128 },
-  "prompt_version": "default",
+  "answer": "## Module 1 ... [3]",
+  "sources": [{ "source_path": "DAA_DSE3101-Module 1.pdf", "similarity_score": 0.0, "snippet": "..." }],
+  "latency": { "retrieval_ms": 90, "generation_ms": 40000, "total_ms": 40100 },
+  "token_usage": { "prompt_tokens": 21056, "completion_tokens": 4341, "total_tokens": 25397 },
+  "prompt_version": "overview_v1",
+  "model": "deepseek-v4.1-flash",
+  "coverage": { "covered": 23, "total": 23, "missing": [], "mode": "overview" },  // overview / map-reduce only
   "query_log_id": "uuid"
 }
 ```
@@ -187,13 +200,31 @@ All variables are read from `.env` in the project root (Docker Compose) or `back
 
 | Variable | Default | Required | Description |
 |----------|---------|----------|-------------|
+| `OPENCODE_API_KEY` | — | Yes* | OpenCode Go API key (default provider when set) |
 | `GEMINI_API_KEY` | — | Yes* | Google Gemini API key |
-| `GROQ_API_KEY` | — | Yes* | Groq API key (*one LLM key required) |
+| `GROQ_API_KEY` | — | Yes* | Groq API key (*one LLM key required); also the fallback for OpenCode |
 | `DATABASE_URL` | `postgresql+psycopg://fullrag:fullrag@localhost:5432/fullrag` | Yes | PostgreSQL connection string |
-| `GENERATION_PROVIDER` | `gemini` | No | Active LLM provider: `gemini` or `groq` |
+| `GENERATION_PROVIDER` | auto | No | `opencode`, `groq` or `gemini`. Auto: `opencode` if `OPENCODE_API_KEY` is set, else `groq` if only a Groq key, else `gemini` |
+| `OPENCODE_BASE_URL` | `https://opencode.ai/inference/go/openai/v1` | No | OpenCode Go OpenAI-compatible endpoint |
+| `OPENCODE_MODEL` | `deepseek-v4.1-flash` | No | Model id from `curl https://opencode.ai/inference/go/v1/models` (~1M context) |
+| `OPENCODE_FALLBACK_MODELS` | — | No | More OpenCode models to try before Groq |
+| `OPENCODE_REASONING_EFFORT` | `low` | No | `low` / `high` / `max` (empty disables) |
+| `GROQ_FALLBACK_ENABLED` | `true` | No | With `opencode`, fall back to the Groq chain when OpenCode fails |
 | `GENERATION_MODEL` | `gemini-2.5-flash` | No | Gemini model name |
 | `GENERATION_TEMPERATURE` | `0.3` | No | LLM sampling temperature |
-| `GENERATION_MAX_TOKENS` | `2048` | No | Maximum output tokens |
+| `GENERATION_MAX_TOKENS` | `8192` (opencode/gemini), `2048` (groq) | No | Maximum output tokens |
+| `MAX_CONTEXT_TOKENS` | `128000` (opencode/gemini), `6000` (groq) | No | Context window budget for ordinary answers (75% used for chunks) |
+| `OVERVIEW_CONTEXT_TOKENS` | `200000` (opencode/gemini), `4500` (groq) | No | Budget for overview / map-reduce context |
+| `SMALL_LIBRARY_DOCS` | `40` | No | Libraries up to this size get every document in an overview answer |
+| `MAP_REDUCE_CONCURRENCY` | `8` | No | Parallel per-document calls for "summarize everything" |
+| `MAP_REDUCE_DOC_TOKENS` | `30000` | No | Most document text sent to one map call |
+| `RERANKER` | `cross-encoder` | No | `cross-encoder` (local), `llm` (generation model) or `none` |
+| `RERANKER_MODEL` | `cross-encoder/ms-marco-MiniLM-L-6-v2` | No | sentence-transformers CrossEncoder model |
+| `RETRIEVAL_CANDIDATES` | `40` | No | Candidates fetched before rerank + MMR |
+| `MMR_LAMBDA` | `0.7` | No | MMR relevance/diversity trade-off (1 = relevance only) |
+| `QUERY_REWRITE_ENABLED` | `true` | No | LLM rewrite of follow-ups into standalone queries |
+| `DOCUMENT_SUMMARIES_ENABLED` | `true` | No | Write a per-document summary at upload |
+| `SUMMARY_BACKFILL_ON_STARTUP` | `true` | No | Fill missing summaries in the background at startup |
 | `GROQ_MODEL` | `openai/gpt-oss-120b` | No | Primary Groq model (must be available to your key) |
 | `GROQ_FALLBACK_MODELS` | `openai/gpt-oss-20b,qwen/qwen3.8-27b` | No | Comma-separated models tried when the primary is missing or rate-limited |
 | `GROQ_REASONING_EFFORT` | `low` | No | gpt-oss reasoning effort (low/medium/high) |
