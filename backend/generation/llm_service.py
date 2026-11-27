@@ -428,6 +428,10 @@ class GroqProvider:
         o = self._openai
         if isinstance(error, (o.NotFoundError, o.PermissionDeniedError, o.RateLimitError)):
             return True
+        # 413 = request bigger than this model's per-minute token limit; 401 =
+        # bad key for this endpoint. Retrying the same model cannot help.
+        if getattr(error, "status_code", None) in (401, 402, 413):
+            return True
         if isinstance(error, o.BadRequestError):
             msg = str(error).lower()
             return any(k in msg for k in ("model", "decommission", "not supported"))
@@ -471,7 +475,7 @@ class GroqProvider:
                     choice = response.choices[0]
                     raw_text = _strip_reasoning(choice.message.content or "")
                     if not raw_text:
-                        raise ValueError("Empty response from Groq")
+                        raise ValueError(f"Empty response from {self._label}")
 
                     token_usage = TokenUsage()
                     if response.usage:
@@ -482,7 +486,7 @@ class GroqProvider:
                         )
 
                     if model != self._models[0]:
-                        logger.warning("Groq: answered with fallback model %s", model)
+                        logger.warning("%s: answered with fallback model %s", self._label, model)
                     return GenerationResponse(
                         text=raw_text,
                         model=model,
@@ -492,13 +496,14 @@ class GroqProvider:
 
                 except Exception as e:
                     if self._skip_model(e):
-                        logger.warning("Groq model %s unavailable: %s", model, e)
+                        logger.warning("%s model %s unavailable: %s", self._label, model, e)
                         errors.append(f"{model}: {e}")
                         break
                     if attempt < max_retries:
                         wait = 2**attempt
                         logger.warning(
-                            "Groq attempt %d/%d on %s failed: %s. Retrying in %ds...",
+                            "%s attempt %d/%d on %s failed: %s. Retrying in %ds...",
+                            self._label,
                             attempt,
                             max_retries,
                             model,
@@ -581,9 +586,9 @@ class GroqProvider:
                     yield delta
                 text = "".join(parts).strip()
                 if not text:
-                    raise ValueError("Empty response from Groq")
+                    raise ValueError(f"Empty response from {self._label}")
                 if model != self._models[0]:
-                    logger.warning("Groq: streamed with fallback model %s", model)
+                    logger.warning("%s: streamed with fallback model %s", self._label, model)
                 yield GenerationResponse(
                     text=text, model=model, token_usage=usage, finish_reason=finish
                 )
@@ -591,7 +596,7 @@ class GroqProvider:
             except Exception as e:
                 if emitted:
                     raise RuntimeError(f"Groq stream interrupted ({model}): {e}") from e
-                logger.warning("Groq stream on %s failed before output: %s", model, e)
+                logger.warning("%s stream on %s failed before output: %s", self._label, model, e)
                 errors.append(f"{model}: {e}")
         raise RuntimeError(
             f"{self._label} generation failed for all models ("

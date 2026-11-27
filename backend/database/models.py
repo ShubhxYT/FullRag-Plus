@@ -50,6 +50,10 @@ class DocumentModel(Base):
     doc_version = Column(String, nullable=True)
     doc_date = Column(String, nullable=True)
     metadata_ = Column("metadata", JSONB, nullable=False, default=dict)
+    # Per-document summary written at ingest / by the backfill (nullable).
+    summary = Column(Text, nullable=True)
+    summary_model = Column(String, nullable=True)
+    summary_updated_at = Column(DateTime(timezone=True), nullable=True)
 
     chunks = relationship(
         "ChunkModel",

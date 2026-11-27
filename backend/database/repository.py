@@ -213,6 +213,46 @@ class DocumentRepository:
         ).all()
         return [(str(r.id), r.source_path, r.title) for r in rows]
 
+    def get_document_summaries(
+        self, session: Session, document_ids: list[str] | None = None
+    ) -> dict[str, str]:
+        """{document_id: summary} for documents that have one."""
+        stmt = select(DocumentModel.id, DocumentModel.summary).where(DocumentModel.summary.is_not(None))
+        if document_ids:
+            stmt = stmt.where(DocumentModel.id.in_(document_ids))
+        return {str(r.id): r.summary for r in session.execute(stmt).all() if (r.summary or "").strip()}
+
+    def documents_missing_summary(self, session: Session) -> list[str]:
+        """IDs of documents without a summary, oldest first."""
+        stmt = (
+            select(DocumentModel.id)
+            .where((DocumentModel.summary.is_(None)) | (DocumentModel.summary == ""))
+            .order_by(DocumentModel.created_at)
+        )
+        return [str(r.id) for r in session.execute(stmt).all()]
+
+    def set_document_summary(
+        self, session: Session, document_id: str, summary: str, model: str | None
+    ) -> bool:
+        """Write only the summary columns of one document (no other column changes)."""
+        from datetime import datetime, timezone
+
+        from sqlalchemy import update
+
+        res = session.execute(
+            update(DocumentModel)
+            .where(DocumentModel.id == document_id)
+            .values(
+                summary=summary,
+                summary_model=model,
+                summary_updated_at=datetime.now(timezone.utc),
+                # keep updated_at as is: a summary is metadata, not a content change
+                updated_at=DocumentModel.updated_at,
+            )
+            .execution_options(synchronize_session=False)
+        )
+        return (res.rowcount or 0) > 0
+
     def get_chunks_for_documents(
         self, session: Session, document_ids: list[str]
     ) -> list[ChunkModel]:

@@ -129,6 +129,18 @@ def _run_ingestion_locked(job_id: str, tmp_path: str, original_name: str) -> Non
         # Clean up temp file
         file_path.unlink(missing_ok=True)
 
+        # Stage 5 — per-document summary for overview questions (best effort)
+        from config.settings import get_document_summaries_enabled
+
+        if get_document_summaries_enabled():
+            update("summarizing", 98)
+            try:
+                from ingestion.summaries import summarize_document
+
+                summarize_document(doc.id)
+            except Exception as exc:  # the document is already searchable
+                logger.warning("Upload job %s: summary skipped: %s", job_id, exc)
+
         # Cached "no documents" answers are stale now.
         from api.routes.query import invalidate_response_cache
 
