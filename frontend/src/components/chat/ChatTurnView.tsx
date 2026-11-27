@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
+import { IconCheck, IconCopy, IconInfo, IconRefresh, IconThumbDown, IconThumbUp } from '../icons';
 import { submitFeedback } from '../../lib/api';
 import type { ChatTurn } from '../../lib/chatStore';
 import type { Source } from '../../lib/types';
@@ -12,6 +13,7 @@ interface Props {
   isLast: boolean;
   onRetry: (id: string) => void;
   onFeedback: (id: string, f: 'thumbs_up' | 'thumbs_down') => void;
+  onCite?: (n: number, source: Source) => void;
 }
 
 function fileName(s: Source) {
@@ -24,9 +26,8 @@ function SourceList({ turnId, sources, highlight }: { turnId: string; sources: S
   if (!sources.length) return null;
   return (
     <div className="mt-5">
-      <div className="flex items-center gap-2 mb-2 text-slate-500">
-        <span className="material-symbols-outlined text-sm">database</span>
-        <span className="text-[10px] font-bold font-headline tracking-widest uppercase">
+      <div className="flex items-center gap-2 mb-2" style={{ color: 'var(--text-faint)' }}>
+        <span className="text-[11px] font-semibold tracking-wide uppercase">
           Sources ({sources.length})
         </span>
       </div>
@@ -40,11 +41,11 @@ function SourceList({ turnId, sources, highlight }: { turnId: string; sources: S
               key={i}
               id={`${turnId}-src-${n}`}
               data-deleted={deleted || undefined}
-              className={`rounded-xl border px-3 py-2 transition-colors ${deleted ? 'opacity-60' : ''} ${
-                highlight === n
-                  ? 'border-indigo-400/60 bg-indigo-500/10'
-                  : 'border-white/5 bg-slate-900/60 hover:border-indigo-500/30'
-              }`}
+              className={`rounded-xl border px-3 py-2 transition-colors ${deleted ? 'opacity-60' : ''}`}
+              style={{
+                borderColor: highlight === n ? 'var(--accent)' : 'var(--border)',
+                background: highlight === n ? 'var(--accent-soft)' : 'var(--bg-elev)',
+              }}
             >
               <button
                 type="button"
@@ -54,12 +55,12 @@ function SourceList({ turnId, sources, highlight }: { turnId: string; sources: S
               >
                 <span className="cite-chip shrink-0">{n}</span>
                 <span className="min-w-0 flex-1">
-                  <span className="block text-xs text-slate-200 font-medium truncate">
+                  <span className="block text-xs font-medium truncate">
                     {s.document_title || fileName(s)}
                   </span>
-                  <span className="block text-[10px] text-slate-500 truncate">
+                  <span className="block text-[10px] truncate" style={{ color: 'var(--text-faint)' }}>
                     {deleted ? (
-                      <span className="text-amber-300/90" title="This document was removed from the knowledge base">
+                      <span title="This document was removed from the knowledge base" style={{ color: 'var(--warn)' }}>
                         Document deleted ·{' '}
                       </span>
                     ) : null}
@@ -67,12 +68,12 @@ function SourceList({ turnId, sources, highlight }: { turnId: string; sources: S
                     {s.page_numbers?.length ? ` · p. ${s.page_numbers.join(', ')}` : ''}
                   </span>
                 </span>
-                <span className="text-[10px] text-slate-500 shrink-0" title="Similarity to your question">
+                <span className="text-[10px] shrink-0" style={{ color: 'var(--text-faint)' }} title="Similarity to your question">
                   {(s.similarity_score * 100).toFixed(0)}%
                 </span>
               </button>
               {expanded && (s.snippet || s.chunk_summary) && (
-                <p className="mt-2 text-xs text-slate-400 leading-relaxed border-t border-white/5 pt-2">
+                <p className="mt-2 text-xs leading-relaxed border-t pt-2" style={{ color: 'var(--text-muted)', borderColor: 'var(--border)' }}>
                   {s.snippet || s.chunk_summary}
                 </p>
               )}
@@ -84,7 +85,7 @@ function SourceList({ turnId, sources, highlight }: { turnId: string; sources: S
   );
 }
 
-export default function ChatTurnView({ turn, isLast, onRetry, onFeedback }: Props) {
+export default function ChatTurnView({ turn, isLast, onRetry, onFeedback, onCite }: Props) {
   const [highlight, setHighlight] = useState<number | null>(null);
   const [copied, setCopied] = useState(false);
   const [feedbackError, setFeedbackError] = useState(false);
@@ -92,6 +93,8 @@ export default function ChatTurnView({ turn, isLast, onRetry, onFeedback }: Prop
 
   const cite = (n: number) => {
     setHighlight(n);
+    const source = turn.sources[n - 1];
+    if (source && onCite) onCite(n, source);
     document.getElementById(`${turn.id}-src-${n}`)?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     window.setTimeout(() => setHighlight((h) => (h === n ? null : h)), 2500);
   };
@@ -124,56 +127,46 @@ export default function ChatTurnView({ turn, isLast, onRetry, onFeedback }: Prop
     : null;
 
   return (
-    <article className="space-y-4" aria-busy={turn.status === 'searching' || streaming}>
-      {/* Question */}
-      <div className="flex justify-end">
-        <div className="max-w-[90%] md:max-w-[75%] bg-indigo-600/20 border border-indigo-500/20 text-slate-100 rounded-2xl rounded-tr-md px-4 py-3 text-[15px] whitespace-pre-wrap break-words">
-          {turn.question}
-        </div>
+    <article className="mb-2" aria-busy={turn.status === 'searching' || streaming}>
+      <div className="flex justify-end mb-4">
+        <p className="user-bubble">{turn.question}</p>
       </div>
 
-      {/* Answer */}
-      <div className="bg-slate-900/40 border border-white/5 backdrop-blur-sm rounded-2xl rounded-tl-md p-4 md:p-6 shadow-xl">
-        <div className="flex items-center gap-2 mb-3">
-          <span className="w-7 h-7 rounded-lg bg-indigo-600 flex items-center justify-center text-white shrink-0">
-            <span className="material-symbols-outlined text-base" style={{ fontVariationSettings: "'FILL' 1" }}>
-              auto_awesome
-            </span>
-          </span>
-          <span className="text-xs font-headline font-bold text-slate-300">FullRag</span>
+      <div>
+        <div className="flex flex-wrap items-center gap-2 mb-2.5">
           {turn.status === 'searching' && (
-            <span className="text-xs text-slate-500 flex items-center gap-1" role="status">
-              <span className="material-symbols-outlined text-sm animate-spin">progress_activity</span>
+            <span className="text-xs flex items-center gap-1" style={{ color: 'var(--text-muted)' }} role="status">
               {turn.progress || 'Searching your documents…'}
             </span>
           )}
           {streaming && !turn.answer && (
-            <span className="text-xs text-slate-500" role="status">
+            <span className="text-xs" style={{ color: 'var(--text-muted)' }} role="status">
               Found {turn.sources.length} source{turn.sources.length === 1 ? '' : 's'}, writing answer…
             </span>
           )}
           {turn.documentIds?.length ? (
-            <span className="text-[10px] font-bold uppercase tracking-widest text-indigo-300/90 bg-indigo-950/40 border border-indigo-500/20 rounded-full px-2 py-0.5" title="Limited with the source picker">
+            <span className="pill badge-accent" title="Limited with the source picker">
               {turn.documentIds.length} selected source{turn.documentIds.length === 1 ? '' : 's'}
             </span>
           ) : null}
-          {turn.coverage && turn.status === 'done' && (
+          {turn.coverage && (turn.status === 'done' || streaming) && (
             <span
-              className={`text-[10px] font-bold uppercase tracking-widest rounded-full px-2 py-0.5 border ${
-                turn.coverage.covered < turn.coverage.total
-                  ? 'text-amber-300 bg-amber-950/30 border-amber-500/20'
-                  : 'text-emerald-400/90 bg-emerald-950/30 border-emerald-500/20'
-              }`}
+              className={`pill ${turn.coverage.covered < turn.coverage.total ? 'badge-warn' : 'badge-ok'}`}
               title={turn.coverage.missing.length ? `Not included: ${turn.coverage.missing.join(', ')}` : 'Every document was included'}
             >
-              {turn.coverage.covered}/{turn.coverage.total} documents
+              <IconCheck size={14} className="icon" />
+              Covered {turn.coverage.covered} of {turn.coverage.total} documents
+            </span>
+          )}
+          {turn.status === 'done' && (
+            <span className="text-xs" style={{ color: 'var(--text-faint)' }}>
+              {turn.model ? `${turn.model}` : ''}
+              {turn.model && turn.latency ? ' · ' : ''}
+              {turn.latency ? `${(turn.latency.total_ms / 1000).toFixed(0)}s` : ''}
             </span>
           )}
           {avgScore !== null && turn.status === 'done' && (
-            <span
-              className="ml-auto text-[10px] font-bold uppercase tracking-widest text-emerald-400/90 bg-emerald-950/30 border border-emerald-500/20 rounded-full px-2 py-0.5"
-              title="Average similarity of the retrieved sources"
-            >
+            <span className="ml-auto text-[11px]" style={{ color: 'var(--text-faint)' }} title="Average similarity of the retrieved sources">
               {avgScore}% match
             </span>
           )}
@@ -181,9 +174,9 @@ export default function ChatTurnView({ turn, isLast, onRetry, onFeedback }: Prop
 
         {turn.status === 'searching' && (
           <div className="space-y-2 animate-pulse" aria-hidden>
-            <div className="h-3 bg-slate-800 rounded w-11/12" />
-            <div className="h-3 bg-slate-800 rounded w-4/5" />
-            <div className="h-3 bg-slate-800 rounded w-2/3" />
+            <div className="h-3 rounded w-11/12" style={{ background: 'var(--bg-hover)' }} />
+            <div className="h-3 rounded w-4/5" style={{ background: 'var(--bg-hover)' }} />
+            <div className="h-3 rounded w-2/3" style={{ background: 'var(--bg-hover)' }} />
           </div>
         )}
 
@@ -192,12 +185,12 @@ export default function ChatTurnView({ turn, isLast, onRetry, onFeedback }: Prop
         )}
 
         {turn.status === 'error' && (
-          <div role="alert" className="mt-2 rounded-xl bg-red-950/30 border border-red-500/20 p-4">
-            <p className="font-headline font-bold text-red-300 text-sm mb-1">Couldn&apos;t answer that</p>
-            <p className="text-sm text-red-400 break-words">{turn.error}</p>
+          <div role="alert" className="mt-2 rounded-xl p-4" style={{ background: 'var(--danger-soft)', color: 'var(--danger)' }}>
+            <p className="font-semibold text-sm mb-1">Couldn&apos;t answer that</p>
+            <p className="text-sm break-words">{turn.error}</p>
             <button
               onClick={() => onRetry(turn.id)}
-              className="mt-3 px-4 py-1.5 rounded-full text-xs font-bold uppercase tracking-widest bg-red-900/40 hover:bg-red-900/60 text-red-200"
+              className="btn mt-3"
             >
               Try again
             </button>
@@ -205,9 +198,9 @@ export default function ChatTurnView({ turn, isLast, onRetry, onFeedback }: Prop
         )}
 
         {turn.status === 'stopped' && (
-          <p className="mt-3 text-xs text-slate-500 flex items-center gap-2">
+          <p className="mt-3 text-xs flex items-center gap-2" style={{ color: 'var(--text-muted)' }}>
             Stopped.
-            <button onClick={() => onRetry(turn.id)} className="text-indigo-300 hover:text-indigo-200 font-semibold">
+            <button onClick={() => onRetry(turn.id)} className="font-semibold" style={{ color: 'var(--accent)' }}>
               Regenerate
             </button>
           </p>
@@ -216,10 +209,10 @@ export default function ChatTurnView({ turn, isLast, onRetry, onFeedback }: Prop
         <SourceList turnId={turn.id} sources={turn.sources} highlight={highlight} />
 
         {turn.status === 'done' && turn.sources.length === 0 && (
-          <p className="mt-4 text-xs text-amber-300/80 flex items-center gap-1.5">
-            <span className="material-symbols-outlined text-sm">info</span>
+          <p className="mt-4 text-xs flex items-center gap-1.5" style={{ color: 'var(--warn)' }}>
+            <IconInfo className="icon" />
             No matching documents were found.
-            <Link to="/library" className="underline underline-offset-2 hover:text-amber-200">
+            <Link to="/library" className="underline underline-offset-2">
               Upload documents
             </Link>
             to get grounded answers.
@@ -227,48 +220,36 @@ export default function ChatTurnView({ turn, isLast, onRetry, onFeedback }: Prop
         )}
 
         {turn.status === 'done' && (
-          <div className="mt-4 pt-3 border-t border-white/5 flex flex-wrap items-center gap-x-4 gap-y-2 text-[10px] text-slate-500 uppercase tracking-widest font-label">
-            {turn.latency && <span>{(turn.latency.total_ms / 1000).toFixed(1)}s</span>}
-            {turn.model && <span className="normal-case tracking-normal">{turn.model}</span>}
-            <span className="ml-auto flex items-center gap-1 normal-case tracking-normal">
-              <button
-                onClick={copy}
-                className="p-1.5 rounded-lg hover:bg-slate-800/60 hover:text-slate-200"
-                title="Copy answer"
-                aria-label="Copy answer"
-              >
-                <span className="material-symbols-outlined text-base">{copied ? 'check' : 'content_copy'}</span>
+          <div className="mt-3 flex flex-wrap items-center gap-0.5">
+            <button onClick={copy} className="icon-btn" title="Copy answer" aria-label="Copy answer">
+              {copied ? <IconCheck className="icon" /> : <IconCopy className="icon" />}
+            </button>
+            {isLast && (
+              <button onClick={() => onRetry(turn.id)} className="icon-btn" title="Regenerate" aria-label="Regenerate answer">
+                <IconRefresh className="icon" />
               </button>
-              {isLast && (
-                <button
-                  onClick={() => onRetry(turn.id)}
-                  className="p-1.5 rounded-lg hover:bg-slate-800/60 hover:text-slate-200"
-                  title="Regenerate"
-                  aria-label="Regenerate answer"
-                >
-                  <span className="material-symbols-outlined text-base">refresh</span>
-                </button>
-              )}
-              <button
-                onClick={() => feedback('thumbs_up')}
-                disabled={!!turn.feedback}
-                className={`p-1.5 rounded-lg hover:bg-slate-800/60 disabled:cursor-default ${turn.feedback === 'thumbs_up' ? 'text-emerald-400' : 'hover:text-emerald-400'}`}
-                aria-label="Helpful"
-                title="Helpful"
-              >
-                <span className="material-symbols-outlined text-base" style={turn.feedback === 'thumbs_up' ? { fontVariationSettings: "'FILL' 1" } : undefined}>thumb_up</span>
-              </button>
-              <button
-                onClick={() => feedback('thumbs_down')}
-                disabled={!!turn.feedback}
-                className={`p-1.5 rounded-lg hover:bg-slate-800/60 disabled:cursor-default ${turn.feedback === 'thumbs_down' ? 'text-red-400' : 'hover:text-red-400'}`}
-                aria-label="Not helpful"
-                title="Not helpful"
-              >
-                <span className="material-symbols-outlined text-base" style={turn.feedback === 'thumbs_down' ? { fontVariationSettings: "'FILL' 1" } : undefined}>thumb_down</span>
-              </button>
-              {feedbackError && <span className="text-red-400">feedback not saved</span>}
-            </span>
+            )}
+            <button
+              onClick={() => feedback('thumbs_up')}
+              disabled={!!turn.feedback}
+              className="icon-btn"
+              style={turn.feedback === 'thumbs_up' ? { color: 'var(--ok)', background: 'var(--ok-soft)' } : undefined}
+              aria-label="Helpful"
+              title="Helpful"
+            >
+              <IconThumbUp className="icon" />
+            </button>
+            <button
+              onClick={() => feedback('thumbs_down')}
+              disabled={!!turn.feedback}
+              className="icon-btn"
+              style={turn.feedback === 'thumbs_down' ? { color: 'var(--danger)', background: 'var(--danger-soft)' } : undefined}
+              aria-label="Not helpful"
+              title="Not helpful"
+            >
+              <IconThumbDown className="icon" />
+            </button>
+            {feedbackError && <span className="text-xs ml-2" style={{ color: 'var(--danger)' }}>feedback not saved</span>}
           </div>
         )}
       </div>

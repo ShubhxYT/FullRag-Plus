@@ -4,7 +4,7 @@ A production-ready Retrieval-Augmented Generation (RAG) system combining a FastA
 
 **Live demo:** [rag-ui.shubhsomani.tech](https://rag-ui.shubhsomani.tech) · **API:** [rag.shubhsomani.tech](https://rag.shubhsomani.tech/health) ([interactive docs](https://rag.shubhsomani.tech/docs))
 
-Upload PDF, DOCX, HTML or Markdown files in the Library, then ask questions in a streaming chat with numbered citations. Conversations are saved in your browser (History), and documents can be deleted again from the Library.
+Upload PDF, DOCX, HTML or Markdown files in the Library panel, then ask questions in a streaming chat with numbered citations. The UI is chat-first: History lives in the left sidebar, Sources and Library in a collapsible right panel, and you can switch between light and dark mode. Conversations are saved in your browser. Tick specific files in Sources to limit a question (`document_ids`). Overview answers show a **Covered X of N documents** badge. Click a citation to open the source excerpt in the panel.
 
 
 ## Architecture
@@ -25,7 +25,7 @@ Upload PDF, DOCX, HTML or Markdown files in the Library, then ask questions in a
 - **Overview questions** ("list all modules with topics", "go through all the sources…"): when the question is corpus-wide, or the library has ≤ `SMALL_LIBRARY_DOCS` documents, **every** document is included, sorted by file name. Each one is represented by its stored summary plus every non-generic heading, within its own budget (`OVERVIEW_CONTEXT_TOKENS`). If not everything fits, the answer ends with **"Covered X of N documents"** and lists what was left out.
 - **Summarize everything** ("summarize all the documents"): map-reduce. One LLM call per document (in parallel, `MAP_REDUCE_CONCURRENCY`), then one combined answer. The stream sends `status` events ("Read 5 of 23 documents…") while it works.
 - **Follow-ups** ("and its complexity?") are rewritten by the LLM into a standalone search query.
-- **Source picker:** `document_ids` in the request (or the picker under the search box) limits every path to those documents.
+- **Source picker:** `document_ids` in the request (or the Sources panel in the UI) limits every path to those documents.
 - **Per-document summaries** are written at upload (one LLM call). Documents that have none are filled in the background at startup, or by `python -m ingestion.summaries --missing`. This only writes `documents.summary`; chunks and embeddings are never touched.
 - When nothing scores above `INSUFFICIENT_THRESHOLD`, the answer says the documents don't cover it.
 
@@ -56,15 +56,15 @@ FullRag-Plus/
 ├── frontend/                   # React + TypeScript frontend (fullrag-plus)
 │   ├── src/
 │   │   ├── main.tsx            # App entry point
-│   │   ├── App.tsx             # Routes: Home, Results, Library
-│   │   ├── lib/                # API client (axios) + TypeScript types
-│   │   ├── pages/              # Home, Results, Library pages
-│   │   └── components/         # Layout, search, results, library components
+│   │   ├── App.tsx             # Routes: chat, history, library (shared shell)
+│   │   ├── lib/                # API client, chat store, source picker, theme
+│   │   ├── pages/              # Chat workspace and start-chat redirect
+│   │   └── components/         # Shell, history sidebar, sources/library panel, chat
 │   ├── public/                 # Static assets
-│   ├── index.html              # HTML shell (dark mode, Manrope/Inter fonts)
+│   ├── index.html              # HTML shell (IBM Plex Sans, light/dark theme)
 │   ├── package.json
 │   ├── vite.config.ts          # Dev server port 5173, proxy /api → :8001
-│   ├── tailwind.config.js      # Material Design 3 dark theme tokens
+│   ├── tailwind.config.js      # Theme tokens
 │   ├── nginx.conf              # Production nginx (SPA + /api proxy)
 │   └── Dockerfile              # Multi-stage: node:20-alpine + nginx:alpine
 ├── .env.example                # All environment variable templates

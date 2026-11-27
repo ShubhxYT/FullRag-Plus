@@ -1,33 +1,99 @@
-import { type ReactNode } from 'react';
-import Sidebar from './Sidebar';
-import MobileNav from './MobileNav';
-import { useHealth, healthDotClass } from '../../lib/useHealth';
+import { useEffect } from 'react';
+import { Outlet, useLocation, useParams } from 'react-router-dom';
+import { useConversation, useChatState } from '../../lib/useChatStore';
+import { getConversation } from '../../lib/chatStore';
+import { useLayout } from '../../lib/layout';
+import { getTheme, subscribeTheme, toggleTheme } from '../../lib/theme';
+import { useSyncExternalStore } from 'react';
+import HistorySidebar from './HistorySidebar';
+import SidePanel from './SidePanel';
+import { IconMenu, IconMoon, IconPanel, IconSun } from '../icons';
 
-export default function AppShell({ children }: { children: ReactNode }) {
-  const health = useHealth();
+export default function AppShell() {
+  const { id } = useParams<{ id: string }>();
+  const { pathname } = useLocation();
+  const { conversation } = useConversation(id);
+  const { activeId } = useChatState();
+  const theme = useSyncExternalStore(subscribeTheme, getTheme, getTheme);
+  const { collapsed, navOpen, panelOpen, closeDrawers, togglePanel, openNav, isNarrow, setPeek } = useLayout();
+
+  const active = conversation ?? getConversation(id ?? activeId);
+  const title =
+    (pathname.startsWith('/chat/') && active?.title) ||
+    (pathname === '/library' ? 'Library' : pathname === '/history' ? 'History' : active?.title) ||
+    'New chat';
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        closeDrawers();
+        setPeek(null);
+      }
+    };
+    const onResize = () => {
+      if (!window.matchMedia('(max-width: 1100px)').matches) closeDrawers();
+    };
+    window.addEventListener('keydown', onKey);
+    window.addEventListener('resize', onResize);
+    return () => {
+      window.removeEventListener('keydown', onKey);
+      window.removeEventListener('resize', onResize);
+    };
+  }, [closeDrawers, setPeek]);
+
+  const classes = [
+    'app-shell',
+    collapsed ? 'panel-collapsed' : '',
+    navOpen ? 'nav-open' : '',
+    panelOpen ? 'panel-open' : '',
+  ]
+    .filter(Boolean)
+    .join(' ');
+
   return (
-    <div className="min-h-screen bg-slate-950 text-on-surface">
-      <Sidebar />
+    <div className={classes} id="app-shell">
+      <HistorySidebar />
 
-      {/* Mobile Header */}
-      <header className="md:hidden fixed top-0 w-full z-50 bg-slate-950/80 backdrop-blur-xl px-6 py-3 flex justify-between items-center">
-        <h1 className="text-xl font-bold text-indigo-400 font-headline tracking-tight">
-          FullRag
-        </h1>
-        <div className="flex items-center gap-2" role="status">
-          <span className={`w-2 h-2 rounded-full ${healthDotClass[health.state]}`} />
-          <span className="text-[10px] font-label font-semibold uppercase tracking-widest text-slate-400">
-            {health.label}
-          </span>
-        </div>
-      </header>
+      <div className="chat-column">
+        <header className="topbar">
+          <button
+            type="button"
+            className="icon-btn menu-btn"
+            style={{ display: 'none' }}
+            aria-label="Open history"
+            onClick={openNav}
+          >
+            <IconMenu className="icon-lg" />
+          </button>
+          <h2 title={title}>{title}</h2>
+          <button
+            type="button"
+            className="icon-btn"
+            onClick={toggleTheme}
+            aria-label="Toggle theme"
+            title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+          >
+            {theme === 'dark' ? <IconSun className="icon-lg" /> : <IconMoon className="icon-lg" />}
+          </button>
+          <button
+            type="button"
+            className={`icon-btn ${panelOpen || (!collapsed && !isNarrow()) ? 'active' : ''}`}
+            onClick={togglePanel}
+            aria-label="Toggle sources panel"
+            title="Sources & library"
+            aria-pressed={panelOpen || (!collapsed && !isNarrow())}
+          >
+            <IconPanel className="icon-lg" />
+          </button>
+        </header>
+        <Outlet />
+      </div>
 
-      {/* Main Content */}
-      <main className="flex-1 md:ml-64 min-h-screen flex flex-col pt-14 md:pt-0 pb-20 md:pb-0">
-        {children}
-      </main>
-
-      <MobileNav />
+      <SidePanel />
+      <div
+        className={`scrim ${navOpen || (panelOpen && isNarrow()) ? 'show' : ''}`}
+        onClick={closeDrawers}
+      />
     </div>
   );
 }
