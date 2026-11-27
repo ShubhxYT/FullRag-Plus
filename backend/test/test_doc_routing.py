@@ -106,7 +106,7 @@ class TestPipelineRouting:
     def test_named_document_filters_search(self):
         p, r = self._pipeline([_result("m5", 0.6, "Module5_IntroToCV.pdf")])
         results, routed = asyncio.run(p._route_and_retrieve("how does module 5 define computer vision", [], 5))
-        assert routed and r.retrieve.call_args.kwargs["document_ids"] == ["m5"]
+        assert routed and r.retrieve.call_args_list[0].kwargs["document_ids"] == ["m5"]
         assert results[0].document_id == "m5"
 
     def test_plain_question_caps_per_document(self):

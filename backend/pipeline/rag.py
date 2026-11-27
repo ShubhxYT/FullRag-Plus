@@ -379,11 +379,29 @@ class RAGPipeline:
                 return Route(results, mode, by_name(list(expected)), budget)
 
         if named:
+            # Search the named documents, then top up from the rest of the
+            # scope: a topic word in a file name ("greedy", "huffman") should
+            # boost that handout, not hide the module deck covering the same topic.
             response = await self._retrieval.retrieve(
                 rq, top_k=top_k, document_ids=named, max_per_document=None, candidates=candidates,
             )
+            results = list(response.results)
+            keep = max(1, top_k - 2) if len(results) >= top_k else len(results)
+            results = results[:keep]
+            if len(named) < len(scope_ids):
+                others = await self._retrieval.retrieve(
+                    rq, top_k=top_k, document_ids=scope_ids if document_ids else None,
+                    max_per_document=self.MAX_CHUNKS_PER_DOCUMENT, candidates=candidates,
+                )
+                seen = {r.chunk_id for r in results}
+                for r in others.results:
+                    if len(results) >= top_k:
+                        break
+                    if r.chunk_id not in seen and r.document_id not in named:
+                        results.append(r)
+                        seen.add(r.chunk_id)
             logger.info("RAG routing: named documents", extra={"component": "pipeline", "documents": len(named)})
-            return Route(response.results, "named")
+            return Route(results, "named")
 
         kwargs: dict = {"top_k": top_k, "candidates": candidates}
         if catalog:
