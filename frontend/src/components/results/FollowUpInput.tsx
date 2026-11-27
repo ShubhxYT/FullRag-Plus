@@ -1,4 +1,5 @@
 import { useState, type FormEvent } from 'react';
+import SourcePicker from '../search/SourcePicker';
 
 interface Props {
   onSubmit: (query: string) => void;
@@ -71,6 +72,9 @@ export default function FollowUpInput({ onSubmit, currentQuestion, busy, onStop,
             )}
           </div>
         </form>
+        <div className="mt-2 flex">
+          <SourcePicker />
+        </div>
 
         {currentQuestion && !busy && (
         <div className="mt-6 hidden md:flex flex-wrap justify-center gap-4">

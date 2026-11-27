@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
+import SourcePicker from './SourcePicker';
 
 export default function SearchInput() {
   const [query, setQuery] = useState('');
@@ -55,6 +56,9 @@ export default function SearchInput() {
             <span className="material-symbols-outlined">arrow_forward</span>
           </button>
         </div>
+      </div>
+      <div className="relative mt-3 flex justify-center">
+        <SourcePicker align="center" direction="down" />
       </div>
     </form>
   );
